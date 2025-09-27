@@ -32,28 +32,29 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-      <body className="bg-slate-950 text-slate-100 antialiased">
-        <div className="relative min-h-screen overflow-hidden">
-          <div className="pointer-events-none absolute inset-0">
-            <Image
-              src="/website background.png"
-              alt="Neon city skyline background"
-              fill
-              priority
-              className="object-cover"
-            />
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.2),_transparent_65%)]" />
-            <div className="absolute inset-0 mix-blend-screen bg-[linear-gradient(120deg,_rgba(56,189,248,0.25)_0%,_rgba(14,116,144,0.08)_40%,_transparent_75%)]" />
-            <div className="absolute inset-0 bg-[linear-gradient(0deg,_rgba(2,6,23,0.65)_0%,_rgba(2,6,23,0.45)_100%)]" />
-          </div>
-          <Providers>
-            <div className="relative z-10 flex min-h-screen flex-col">
+      <body className="bg-stone-950 text-stone-200 antialiased">
+        <Providers>
+          <div className="relative flex min-h-screen flex-col">
+            <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+              <Image
+                src="/website background.png"
+                alt="Ambient city backdrop"
+                fill
+                priority
+                className="object-cover"
+              />
+              <div className="absolute inset-0 bg-stone-950/70" />
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(136,84,24,0.12),_transparent_65%)]" />
+            </div>
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-[linear-gradient(180deg,_rgba(250,250,249,0.04)_0%,_rgba(23,23,23,0)_100%)]" />
+            <div className="pointer-events-none absolute inset-y-0 left-1/2 hidden w-px -translate-x-1/2 bg-gradient-to-b from-stone-700/40 via-stone-800/0 to-stone-700/40 sm:block" />
+            <div className="relative z-10 flex min-h-screen flex-col bg-[radial-gradient(circle_at_top,_rgba(136,84,24,0.08),_transparent_60%)]">
               <SiteHeader />
-              <div className="flex-1">{children}</div>
+              <main className="flex-1">{children}</main>
               <SiteFooter />
             </div>
-          </Providers>
-        </div>
+          </div>
+        </Providers>
       </body>
     </html>
   );
