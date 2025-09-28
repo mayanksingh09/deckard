@@ -16,4 +16,6 @@ dependencies = [
     "httpx>=0.27.0",
     "pytest>=8.4.2",
     "playwright>=1.55.0",
+    "chromium>=0.0.0",
+    "supabase>=2.20.0",
 ]

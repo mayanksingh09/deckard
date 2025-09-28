@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .web_search_agent import search_agent
+from app.services.computer_use import post_to_x
 
 
 @function_tool(name_override="web_search")
@@ -21,6 +22,17 @@ async def execute_web_search(query: str) -> str:
     if run_result.final_output:
         return str(run_result.final_output)
     return "I could not find any relevant results."
+
+
+@function_tool(name_override="post_to_x")
+async def post_to_x_tool(post_content: str) -> str:
+    """Publish a post on x.com using the computer-use automation agent."""
+
+    normalized_content = (post_content or "").strip()
+    if not normalized_content:
+        return "I need the text you would like me to post on x.com."
+
+    return await post_to_x(normalized_content)
 
 web_search_rt_agent = RealtimeAgent(
     name="Realtime Voice Web Search Agent",
@@ -40,6 +52,7 @@ assistant_agent = RealtimeAgent(
         f"{RECOMMENDED_PROMPT_PREFIX} "
         "You are a helpful voice assistant agent. You provide to the point and succinct answers. You can use your tools to delegate questions to other appropriate agents."
     ),
+    tools=[post_to_x_tool],
     handoffs=[web_search_rt_agent]
 )
 
