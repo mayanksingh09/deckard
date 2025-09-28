@@ -19,7 +19,9 @@ export const metadata: Metadata = {
   description:
     "Prototype workspace for building real-time personal AI avatars with voice and video cloning.",
   icons: {
-    icon: [{ url: "/favicon.ico" }],
+    icon: [{ url: "/logo_da.png" }],
+    shortcut: [{ url: "/logo_da.png" }],
+    apple: [{ url: "/logo_da.png" }],
   },
 };
 

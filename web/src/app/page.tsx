@@ -799,16 +799,21 @@ export default function Home() {
       <main className="relative z-10 mx-auto flex min-h-screen w-full flex-col items-center px-6 py-8">
         {/* AI DECKARD Title */}
         <div className="mb-12 text-center">
-          <span className="text-xs font-semibold uppercase tracking-[0.6em] text-stone-400/80">
-            Synthetic Operations Hub
-          </span>
-          <h1 className="mt-4 text-6xl font-bold tracking-tight text-white sm:text-7xl">
+          <h1 className="mt-4 flex items-center justify-center gap-4 text-6xl font-bold tracking-tight text-white sm:text-7xl">
+            <Image
+              src="/c281291e-d2ca-4240-97bb-93a2526aa38d.png"
+              alt="Deckard company logo"
+              width={160}
+              height={160}
+              priority
+              className="h-12 w-auto sm:h-16"
+            />
             <span className="bg-gradient-to-r from-stone-200 via-stone-300 to-stone-400 bg-clip-text text-transparent drop-shadow-[0_10px_36px_rgba(120,113,108,0.45)]">
-              AI Deckard
+              Deckard
             </span>
           </h1>
           <p className="mt-4 mx-auto max-w-2xl text-base text-stone-300 sm:text-lg">
-            Real-time command center for orchestrating synthetic agents, conversational capture, and telemetry feeds.
+            Create and interact with personalized AI clones
           </p>
         </div>
 
