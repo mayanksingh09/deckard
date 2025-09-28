@@ -2,13 +2,24 @@
 from __future__ import annotations
 
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
-from agents import function_tool, WebSearchTool
-from agents.realtime import RealtimeAgent, realtime_handoff
+from agents import Runner, function_tool
+from agents.realtime import RealtimeAgent
 
 from dotenv import load_dotenv
 
 
 load_dotenv()
+
+from .web_search_agent import search_agent
+
+
+@function_tool(name_override="web_search")
+async def execute_web_search(query: str) -> str:
+    """Run the async search agent to answer the query with fresh web context."""
+    run_result = await Runner.run(search_agent, input=query)
+    if run_result.final_output:
+        return str(run_result.final_output)
+    return "I could not find any relevant results."
 
 web_search_rt_agent = RealtimeAgent(
     name="Realtime Voice Web Search Agent",
@@ -19,7 +30,7 @@ web_search_rt_agent = RealtimeAgent(
     1. Identify the last question asked by the customer.
     2. Use the web search tool to answer the question. Do not rely on your own knowledge.
     3. If you cannot answer the question, transfer back to the assistant agent.""",
-    tools=[WebSearchTool()]
+    tools=[execute_web_search]
 )
 
 assistant_agent = RealtimeAgent(
