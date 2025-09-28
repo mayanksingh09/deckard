@@ -43,6 +43,23 @@ When asked to research an expert on https://advicehub.ai/, follow these rules:
 Otherwise just following the user's browsing instructions.
 """
 
+GENERIC_BROWSE_AGENT_INSTRUCTIONS = """
+You control a Chromium browser via Playwright.
+
+You are a web browsing agent that can navigate to websites and search for information.
+
+Follow these guidelines:
+1. If given a specific URL, navigate to that website first.
+2. If no URL is provided, use Google search (https://www.google.com) to find relevant information.
+3. Use the site's search interface or navigate through the site to find relevant information.
+4. Read and summarize the content you find, focusing on answering the user's query.
+5. Be thorough but concise in your summary.
+6. Avoid modifying site settings or interacting with unrelated content.
+7. If you encounter errors or can't find information, clearly state what happened.
+
+Return a clear, informative summary of what you found.
+"""
+
 
 async def main():
     async with LocalPlaywrightComputer(start_url="https://advicehub.ai/") as computer:
@@ -271,6 +288,56 @@ class LocalPlaywrightComputer(AsyncComputer):
         for px, py in path[1:]:
             await self.page.mouse.move(px, py)
         await self.page.mouse.up()
+
+
+async def browse_query(query: str, url: str | None = None) -> str:
+    """Run the computer-use agent to browse and search for information."""
+
+    turns_budget = _env_int("COMPUTER_USE_MAX_TURNS", default=25)
+
+    normalized_query = (query or "").strip()
+    if not normalized_query:
+        return "I need a search query to browse for information."
+
+    # Default to Google search if no URL provided
+    start_url = url.strip() if url else "https://www.google.com"
+
+    async with LocalPlaywrightComputer(start_url=start_url) as computer:
+        with trace("Generic browse query"):
+            agent = Agent(
+                name="Web Browser",
+                instructions=GENERIC_BROWSE_AGENT_INSTRUCTIONS,
+                tools=[ComputerTool(computer)],
+                model="computer-use-preview",
+                model_settings=ModelSettings(truncation="auto"),
+            )
+            try:
+                if url:
+                    task_prompt = (
+                        f"Navigate to '{url}' and search for information about '{normalized_query}'. "
+                        "Summarize what you find including key details, facts, or relevant information."
+                    )
+                else:
+                    task_prompt = (
+                        f"Search Google for '{normalized_query}' and provide a summary of the most relevant "
+                        "information you find from the search results."
+                    )
+                result = await Runner.run(
+                    agent,
+                    task_prompt,
+                    max_turns=turns_budget,
+                )
+            except MaxTurnsExceeded as exc:
+                error_hint = (
+                    "Computer-use automation exceeded its turn limit before completing the browse query. "
+                    "Verify the target website is reachable (configure PLAYWRIGHT_USER_DATA_DIR if needed) "
+                    "and raise COMPUTER_USE_MAX_TURNS if more steps are required."
+                )
+                raise RuntimeError(error_hint) from exc
+
+    if result.final_output:
+        return str(result.final_output)
+    return "Browsed for information, but the agent did not provide a summary."
 
 
 async def search_advicehub(query: str) -> str:

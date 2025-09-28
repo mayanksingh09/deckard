@@ -677,16 +677,31 @@ export default function Home() {
   const isMicLive = isCapturing && !isMuted;
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-100">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.18),_transparent_58%)]" />
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_bottom,_rgba(16,185,129,0.18),_transparent_55%)]" />
+    <div className="relative min-h-screen overflow-hidden text-stone-100">
+      <div className="pointer-events-none absolute inset-0 -z-20">
+        <Image
+          src="/website background.png"
+          alt="Deckard ambient backdrop"
+          fill
+          priority
+          className="object-cover"
+        />
+      </div>
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div className="absolute inset-0 bg-gradient-to-br from-stone-950/92 via-stone-900/78 to-stone-950/94" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(214,211,209,0.24),_transparent_58%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom,_rgba(120,113,108,0.2),_transparent_60%)]" />
+        <div className="absolute inset-0 bg-[linear-gradient(120deg,_rgba(250,250,249,0.08)_0%,_rgba(41,37,36,0.65)_55%,_rgba(12,10,9,0.78)_100%)]" />
+      </div>
 
       {/* Left Panel - Conversation */}
-      <div className={`fixed left-0 top-0 z-20 h-full w-80 transform bg-slate-950/95 backdrop-blur-xl transition-transform duration-300 ease-in-out ${
+      <div
+        className={`fixed left-0 top-0 z-20 h-full w-80 transform bg-stone-950/85 backdrop-blur-2xl transition-transform duration-300 ease-in-out ${
         leftPanelOpen ? 'translate-x-0' : '-translate-x-full'
-      }`}>
-        <div className="h-full border-r border-white/10 p-6">
-          <div className="flex items-center justify-between text-[0.65rem] font-semibold uppercase tracking-[0.35em] text-slate-400">
+      }`}
+      >
+        <div className="h-full border-r border-stone-500/30 p-6">
+          <div className="flex items-center justify-between text-[0.65rem] font-semibold uppercase tracking-[0.35em] text-stone-400">
             <div className="flex items-center gap-2">
               <span>Conversation</span>
               <span>·</span>
@@ -694,16 +709,16 @@ export default function Home() {
             </div>
             <button
               onClick={() => setLeftPanelOpen(false)}
-              className="group flex h-8 w-8 items-center justify-center rounded-full border border-white/10 transition-all hover:border-white/20 hover:bg-white/5"
+              className="group flex h-8 w-8 items-center justify-center rounded-full border border-stone-500/30 transition-all hover:border-stone-400/50 hover:bg-stone-900/40"
             >
-              <svg className="h-4 w-4 text-slate-400 transition-colors group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="h-4 w-4 text-stone-400 transition-colors group-hover:text-stone-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
-          <div className="mt-4 flex max-h-[calc(100vh-8rem)] flex-col gap-4 overflow-y-auto pr-2 text-sm [scrollbar-color:rgba(148,163,184,0.35)_transparent]">
+          <div className="mt-4 flex max-h-[calc(100vh-8rem)] flex-col gap-4 overflow-y-auto pr-2 text-sm [scrollbar-color:rgba(168,162,158,0.35)_transparent]">
             {messages.length === 0 ? (
-              <p className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-6 text-center text-slate-500">
+              <p className="rounded-2xl border border-dashed border-stone-500/30 bg-stone-950/40 px-4 py-6 text-center text-stone-500">
                 Initiate a connection to populate the conversational thread.
               </p>
             ) : (
@@ -713,7 +728,7 @@ export default function Home() {
                     className={`max-w-[85%] rounded-3xl border px-4 py-3 text-sm shadow-[0_25px_80px_rgba(15,23,42,0.45)] ${
                       message.role === 'user'
                         ? 'border-emerald-400/50 bg-emerald-400/10 text-emerald-100'
-                        : 'border-white/10 bg-white/5 text-slate-100'
+                        : 'border-stone-500/30 bg-stone-900/40 text-stone-100'
                     }`}
                   >
                     <div className="flex flex-col gap-2">
@@ -726,13 +741,13 @@ export default function Home() {
                               alt={`Uploaded ${index + 1}`}
                               width={200}
                               height={200}
-                              className="h-auto w-full rounded-2xl border border-white/20 object-cover"
+                              className="h-auto w-full rounded-2xl border border-stone-400/30 object-cover"
                             />
                           ))}
                         </div>
                       ) : null}
-                      {message.text ? <p className="leading-relaxed text-slate-100/90">{message.text}</p> : null}
-                      <span className="text-[0.5rem] uppercase tracking-[0.35em] text-slate-400">{message.role}</span>
+                      {message.text ? <p className="leading-relaxed text-stone-100/90">{message.text}</p> : null}
+                      <span className="text-[0.5rem] uppercase tracking-[0.35em] text-stone-400">{message.role}</span>
                     </div>
                   </div>
                 </div>
@@ -743,15 +758,17 @@ export default function Home() {
       </div>
 
       {/* Right Panel - Realtime Feed */}
-      <div className={`fixed right-0 top-0 z-20 h-full w-80 transform bg-slate-950/95 backdrop-blur-xl transition-transform duration-300 ease-in-out ${
-        rightPanelOpen ? 'translate-x-0' : 'translate-x-full'
-      }`}>
-        <div className="h-full border-l border-white/10 p-6">
-          <div className="flex items-center justify-between text-[0.65rem] font-semibold uppercase tracking-[0.35em] text-slate-400">
+      <div
+        className={`fixed right-0 top-0 z-20 h-full w-80 transform bg-stone-950/85 backdrop-blur-2xl transition-transform duration-300 ease-in-out ${
+          rightPanelOpen ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <div className="h-full border-l border-stone-500/30 p-6">
+          <div className="flex items-center justify-between text-[0.65rem] font-semibold uppercase tracking-[0.35em] text-stone-400">
             <div className="flex items-center gap-2">
               <span>Realtime Feed</span>
               <button
-                className="rounded-full border border-white/10 px-2 py-1 text-[0.5rem] uppercase tracking-[0.35em] text-slate-400 transition hover:text-white"
+                className="rounded-full border border-stone-500/30 px-2 py-1 text-[0.5rem] uppercase tracking-[0.35em] text-stone-400 transition hover:border-stone-400/60 hover:text-stone-100"
                 onClick={() => setEvents([])}
               >
                 Clear
@@ -759,16 +776,16 @@ export default function Home() {
             </div>
             <button
               onClick={() => setRightPanelOpen(false)}
-              className="group flex h-8 w-8 items-center justify-center rounded-full border border-white/10 transition-all hover:border-white/20 hover:bg-white/5"
+              className="group flex h-8 w-8 items-center justify-center rounded-full border border-stone-500/30 transition-all hover:border-stone-400/50 hover:bg-stone-900/40"
             >
-              <svg className="h-4 w-4 text-slate-400 transition-colors group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="h-4 w-4 text-stone-400 transition-colors group-hover:text-stone-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
-          <div className="mt-4 flex max-h-[calc(100vh-8rem)] flex-col gap-3 overflow-y-auto pr-2 text-sm [scrollbar-color:rgba(148,163,184,0.35)_transparent]">
+          <div className="mt-4 flex max-h-[calc(100vh-8rem)] flex-col gap-3 overflow-y-auto pr-2 text-sm [scrollbar-color:rgba(168,162,158,0.35)_transparent]">
             {events.length === 0 ? (
-              <p className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-6 text-center text-slate-500">
+              <p className="rounded-2xl border border-dashed border-stone-500/30 bg-stone-950/40 px-4 py-6 text-center text-stone-500">
                 Streamed tool events and guardrail updates will appear here.
               </p>
             ) : (
@@ -780,15 +797,15 @@ export default function Home() {
                       ? 'border-rose-500/60 bg-rose-500/10 text-rose-100'
                       : event.severity === 'warn'
                       ? 'border-amber-400/60 bg-amber-400/10 text-amber-100'
-                      : 'border-white/10 bg-white/5 text-slate-100'
+                      : 'border-stone-500/30 bg-stone-900/40 text-stone-100'
                   }`}
                 >
-                  <div className="flex items-center justify-between text-[0.5rem] uppercase tracking-[0.35em] text-slate-400">
+                  <div className="flex items-center justify-between text-[0.5rem] uppercase tracking-[0.35em] text-stone-400">
                     <span>{event.type}</span>
                     <span>{formatTimestamp(event.ts)}</span>
                   </div>
-                  <div className="mt-1 font-semibold text-white">{event.title}</div>
-                  {event.description ? <div className="mt-1 text-xs text-slate-200/80">{event.description}</div> : null}
+                  <div className="mt-1 font-semibold text-stone-100">{event.title}</div>
+                  {event.description ? <div className="mt-1 text-xs text-stone-200/80">{event.description}</div> : null}
                 </div>
               ))
             )}
@@ -823,7 +840,7 @@ export default function Home() {
             {/* Left Toggle Button - Conversation */}
             <button
               onClick={() => setLeftPanelOpen(!leftPanelOpen)}
-              className="group flex h-20 w-24 flex-col items-center justify-center self-start rounded-2xl border border-stone-500/30 bg-white/5 backdrop-blur-xl transition-all hover:bg-white/10 hover:border-stone-500/50 sm:-translate-y-2"
+              className="group flex h-20 w-24 flex-col items-center justify-center self-start rounded-2xl border border-stone-500/30 bg-stone-900/40 backdrop-blur-2xl transition-all hover:border-stone-400/60 hover:bg-stone-900/55 sm:-translate-y-2"
             >
               <div className="mb-2 flex flex-col items-center gap-1">
                 <svg className="h-4 w-4 text-stone-300 transition-colors group-hover:text-stone-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -839,18 +856,18 @@ export default function Home() {
             </button>
 
             {/* Central Avatar Area */}
-            <div className="relative overflow-hidden rounded-[32px] border border-white/10 bg-white/5 p-8 shadow-[0_35px_140px_rgba(2,6,23,0.65)] backdrop-blur-2xl">
+            <div className="relative overflow-hidden rounded-[32px] border border-stone-500/35 bg-stone-900/45 p-8 shadow-[0_35px_140px_rgba(2,6,23,0.65)] backdrop-blur-2xl">
               <div className="flex flex-col gap-4">
-                <div className="flex flex-wrap items-center justify-between gap-4 text-[0.65rem] uppercase tracking-[0.35em] text-slate-400">
+                <div className="flex flex-wrap items-center justify-between gap-4 text-[0.65rem] uppercase tracking-[0.35em] text-stone-400">
                   <div className="flex items-center gap-3">
                     <span
                       className={`inline-flex h-3 w-3 rounded-full shadow-[0_0_24px_rgba(34,197,94,0.65)] ${
-                        isConnected ? 'bg-emerald-400' : isConnecting ? 'bg-amber-400' : 'bg-slate-600'
+                        isConnected ? 'bg-emerald-400' : isConnecting ? 'bg-amber-400' : 'bg-stone-600'
                       }`}
                     />
-                    <span className="font-semibold text-slate-200">{statusText}</span>
+                    <span className="font-semibold text-stone-200">{statusText}</span>
                   </div>
-                  <span className={`font-semibold ${isMicLive ? 'text-emerald-200' : isMuted ? 'text-slate-500' : 'text-slate-300'}`}>
+                  <span className={`font-semibold ${isMicLive ? 'text-emerald-200' : isMuted ? 'text-stone-500' : 'text-stone-300'}`}>
                     {isConnected ? (isMicLive ? 'Microphone live' : isMuted ? 'Microphone muted' : 'Microphone idle') : 'Awaiting connection'}
                   </span>
                 </div>
@@ -861,7 +878,7 @@ export default function Home() {
                 ) : null}
               </div>
 
-              <div className="relative mx-auto mt-8 w-full max-w-sm overflow-hidden rounded-[28px] border border-white/10 bg-gradient-to-b from-slate-900/80 via-slate-900/30 to-slate-950" data-testid="talking-video-box" style={{ aspectRatio: '9 / 16' }}>
+              <div className="relative mx-auto mt-8 w-full max-w-sm overflow-hidden rounded-[28px] border border-stone-500/35 bg-gradient-to-b from-stone-950/85 via-stone-900/35 to-stone-950/95" data-testid="talking-video-box" style={{ aspectRatio: '9 / 16' }}>
                 {videoUrl ? (
                   <video
                     src={videoUrl}
@@ -901,7 +918,7 @@ export default function Home() {
                     className={`rounded-full border px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.35em] transition ${
                       persona === key
                         ? 'border-emerald-400/70 bg-emerald-400/10 text-emerald-100 shadow-[0_0_24px_rgba(16,185,129,0.35)]'
-                        : 'border-white/10 bg-white/5 text-slate-300 hover:text-white'
+                        : 'border-stone-500/30 bg-stone-900/40 text-stone-300 hover:text-stone-100'
                     }`}
                   >
                     {key.replace('_', ' ').toUpperCase()}
@@ -914,7 +931,7 @@ export default function Home() {
                   className={`rounded-full px-5 py-3 text-sm font-semibold uppercase tracking-[0.35em] transition ${
                     isConnected
                       ? 'bg-rose-500/15 text-rose-100 hover:bg-rose-500/25'
-                      : 'bg-emerald-400 text-slate-950 hover:bg-emerald-300'
+                      : 'bg-emerald-400 text-stone-950 hover:bg-emerald-300'
                   } ${isConnecting ? 'opacity-70' : ''}`}
                   onClick={() => {
                     setUserInteracted(true);
@@ -929,8 +946,8 @@ export default function Home() {
                   {isConnected ? 'Disconnect' : isConnecting ? 'Connecting…' : 'Connect'}
                 </button>
                 <button
-                  className={`rounded-full border border-white/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.35em] transition ${
-                    isMicLive ? 'bg-emerald-500/10 text-emerald-200' : isMuted ? 'bg-slate-900 text-slate-500' : 'bg-slate-900 text-slate-200'
+                  className={`rounded-full border border-stone-500/30 px-5 py-3 text-sm font-semibold uppercase tracking-[0.35em] transition ${
+                    isMicLive ? 'bg-emerald-500/10 text-emerald-200' : isMuted ? 'bg-stone-950 text-stone-500' : 'bg-stone-950 text-stone-200'
                   } ${!isConnected ? 'opacity-50' : ''}`}
                   onClick={toggleMute}
                   disabled={!isConnected}
@@ -938,14 +955,14 @@ export default function Home() {
                   {isMicLive ? 'Mic Live' : isMuted ? 'Mic Muted' : 'Enable Mic'}
                 </button>
                 <button
-                  className="rounded-full border border-white/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.35em] text-slate-200 transition hover:border-emerald-300/40 hover:text-white"
+                  className="rounded-full border border-stone-500/30 px-5 py-3 text-sm font-semibold uppercase tracking-[0.35em] text-stone-200 transition hover:border-emerald-300/40 hover:text-stone-100"
                   onClick={interrupt}
                   disabled={!isConnected}
                 >
                   Interrupt
                 </button>
                 <button
-                  className="rounded-full border border-white/10 px-5 py-3 text-sm font-semibold uppercase tracking-[0.35em] text-slate-200 transition hover:border-emerald-300/40 hover:text-white"
+                  className="rounded-full border border-stone-500/30 px-5 py-3 text-sm font-semibold uppercase tracking-[0.35em] text-stone-200 transition hover:border-emerald-300/40 hover:text-stone-100"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={!isConnected}
                 >
@@ -962,19 +979,19 @@ export default function Home() {
 
               <div className="mt-6 grid gap-4 sm:grid-cols-5">
                 <div className="sm:col-span-3">
-                  <label className="text-[0.6rem] font-semibold uppercase tracking-[0.35em] text-slate-500">Image Prompt</label>
+                  <label className="text-[0.6rem] font-semibold uppercase tracking-[0.35em] text-stone-500">Image Prompt</label>
                   <input
-                    className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-slate-100 shadow-[0_12px_60px_rgba(15,23,42,0.4)] focus:border-emerald-300/60 focus:outline-none focus:ring-0"
+                    className="mt-2 w-full rounded-2xl border border-stone-500/30 bg-stone-950/45 px-4 py-3 text-sm text-stone-100 shadow-[0_12px_60px_rgba(15,23,42,0.4)] focus:border-emerald-300/60 focus:outline-none focus:ring-0"
                     value={promptText}
                     onChange={(event) => setPromptText(event.target.value)}
                     placeholder="Describe how the assistant should interpret the uploaded image"
                   />
                 </div>
                 <div className="flex flex-col justify-end gap-3 sm:col-span-2">
-                  <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-[0.65rem] uppercase tracking-[0.35em] text-slate-400">
-                    <span className="flex items-center justify-between text-slate-300">
+                  <div className="rounded-2xl border border-stone-500/30 bg-stone-950/45 px-4 py-3 text-[0.65rem] uppercase tracking-[0.35em] text-stone-400">
+                    <span className="flex items-center justify-between text-stone-300">
                       <span>Capture</span>
-                      <span className={`font-semibold ${isMicLive ? 'text-emerald-200' : isMuted ? 'text-slate-500' : 'text-slate-300'}`}>
+                      <span className={`font-semibold ${isMicLive ? 'text-emerald-200' : isMuted ? 'text-stone-500' : 'text-stone-300'}`}>
                         {isConnected ? (isMicLive ? 'Streaming' : isMuted ? 'Muted' : 'Idle') : 'Offline'}
                       </span>
                     </span>
@@ -983,15 +1000,15 @@ export default function Home() {
               </div>
 
               <div className="mt-6 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3">
-                  <span className="text-[0.55rem] font-semibold uppercase tracking-[0.4em] text-slate-500">Session</span>
-                  <span className="mt-2 block truncate text-sm text-slate-200" suppressHydrationWarning>
+                <div className="rounded-2xl border border-stone-500/30 bg-stone-950/45 px-4 py-3">
+                  <span className="text-[0.55rem] font-semibold uppercase tracking-[0.4em] text-stone-500">Session</span>
+                  <span className="mt-2 block truncate text-sm text-stone-200" suppressHydrationWarning>
                     {sessionId || '—'}
                   </span>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3">
-                  <span className="text-[0.55rem] font-semibold uppercase tracking-[0.4em] text-slate-500">Realtime Endpoint</span>
-                  <span className="mt-2 block truncate text-sm text-slate-200" suppressHydrationWarning>
+                <div className="rounded-2xl border border-stone-500/30 bg-stone-950/45 px-4 py-3">
+                  <span className="text-[0.55rem] font-semibold uppercase tracking-[0.4em] text-stone-500">Realtime Endpoint</span>
+                  <span className="mt-2 block truncate text-sm text-stone-200" suppressHydrationWarning>
                     {sessionId ? buildWsUrl(wsBase, sessionId) : `${wsBase}/ws/{pending}`}
                   </span>
                 </div>
@@ -1001,7 +1018,7 @@ export default function Home() {
             {/* Right Toggle Button - Feed */}
             <button
               onClick={() => setRightPanelOpen(!rightPanelOpen)}
-              className="group flex h-20 w-24 flex-col items-center justify-center self-start rounded-2xl border border-stone-500/30 bg-white/5 backdrop-blur-xl transition-all hover:bg-white/10 hover:border-stone-500/50 sm:-translate-y-2"
+              className="group flex h-20 w-24 flex-col items-center justify-center self-start rounded-2xl border border-stone-500/30 bg-stone-900/40 backdrop-blur-2xl transition-all hover:border-stone-400/60 hover:bg-stone-900/55 sm:-translate-y-2"
             >
               <div className="mb-2 flex flex-col items-center gap-1">
                 <svg className={`h-3 w-3 text-stone-400 transition-all group-hover:text-stone-100 ${rightPanelOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">

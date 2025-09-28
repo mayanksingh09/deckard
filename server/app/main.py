@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing_extensions import assert_never
 
-from agents import Runner
 from agents.realtime import RealtimeRunner, RealtimeSession, RealtimeSessionEvent
 from agents.realtime.config import RealtimeUserInputMessage
 from agents.realtime.model_inputs import RealtimeModelSendRawMessage
@@ -63,9 +62,9 @@ else:
         from ai_agents.realtime_conversation import get_starting_agent
 
 try:
-    from .ai_agents.sentiment_classifying import sentiment_classifying_agent
+    from .ai_agents.sentiment_classifying import classify_sentiment
 except ImportError:
-    from ai_agents.sentiment_classifying import sentiment_classifying_agent
+    from ai_agents.sentiment_classifying import classify_sentiment
 
 logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
@@ -300,12 +299,11 @@ class RealtimeWebSocketManager:
             return "neutral"
 
         try:
-            result = await Runner.run(sentiment_classifying_agent, input=normalized)
+            sentiment = await classify_sentiment(normalized)
         except Exception as exc:
             logger.exception("Failed to classify sentiment: %s", exc)
             return "neutral"
 
-        sentiment = (getattr(result, "final_output", None) or "").strip().lower()
         if sentiment in VALID_SENTIMENTS:
             return sentiment
 
