@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .web_search_agent import search_agent
-from .sentiment_classifying import sentiment_classifying_agent
-from app.services.computer_use import post_to_x
+from .sentiment_classifying import classify_sentiment
+from app.services.computer_use import search_advicehub, browse_query
 
 
 @function_tool(name_override="web_search")
@@ -28,21 +28,28 @@ async def execute_web_search(query: str) -> str:
 @function_tool(name_override="sentiment_classifying")
 async def execute_sentiment_classifying(message: str) -> str:
     """Classify the sentiment of the user's message."""
-    run_result = await Runner.run(sentiment_classifying_agent, input=message)
-    if run_result.final_output:
-        return str(run_result.final_output)
-    return "I could not classify the sentiment of the message."
+    sentiment = await classify_sentiment(message)
+    return sentiment or "I could not classify the sentiment of the message."
 
 
-@function_tool(name_override="post_to_x")
-async def post_to_x_tool(post_content: str) -> str:
-    """Publish a post on x.com using the computer-use automation agent."""
+@function_tool(name_override="search_advicehub")
+async def search_advicehub_tool(search_query: str | None = None) -> str:
+    """Run the computer-use automation agent to search advicehub.ai for an expert."""
 
-    normalized_content = (post_content or "").strip()
-    if not normalized_content:
-        return "I need the text you would like me to post on x.com."
+    normalized_query = (search_query or "").strip()
+    if not normalized_query:
+        return "I need the expert's name to search on advicehub.ai."
+    return await search_advicehub(normalized_query)
 
-    return await post_to_x(normalized_content)
+
+@function_tool(name_override="browse_query")
+async def execute_browse_query(query: str, url: str | None = None) -> str:
+    """Run the computer-use automation agent to browse and search for information on any website."""
+
+    normalized_query = (query or "").strip()
+    if not normalized_query:
+        return "I need a search query to browse for information."
+    return await browse_query(normalized_query, url)
 
 web_search_rt_agent = RealtimeAgent(
     name="Realtime Voice Web Search Agent",
@@ -62,7 +69,7 @@ assistant_agent = RealtimeAgent(
         f"{RECOMMENDED_PROMPT_PREFIX} "
         "You are a helpful voice assistant agent. You provide to the point and succinct answers. You can use your tools to delegate questions to other appropriate agents."
     ),
-    tools=[post_to_x_tool, execute_sentiment_classifying],
+    tools=[search_advicehub_tool, execute_sentiment_classifying, execute_browse_query],
     handoffs=[web_search_rt_agent]
 )
 
