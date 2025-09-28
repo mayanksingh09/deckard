@@ -159,6 +159,9 @@ class DIDTalksService:
                     "voice_id": voice_id
                 }
             },
+            "config": {
+                "stitch": "true"
+            }
         }
         webhook_url = webhook or self._default_webhook
         if webhook_url:
