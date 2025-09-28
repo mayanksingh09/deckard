@@ -19,38 +19,44 @@ from agents import (
     trace,
 )
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # Uncomment to see very verbose logs
 # import logging
 # logging.getLogger("openai.agents").setLevel(logging.DEBUG)
 # logging.getLogger("openai.agents").addHandler(logging.StreamHandler())
 
 
-POST_TO_X_AGENT_INSTRUCTIONS = """
-You control a Chromium browser via Playwright. The browser is already logged into https://x.com/.
-When you are asked to share a post, follow these rules:
+ADVICEHUB_AGENT_INSTRUCTIONS = """
+You control a Chromium browser via Playwright.
 
-1. Navigate to https://x.com/compose/post (or open the post dialog from the home feed).
-2. Use exactly the text provided by the user unless they request edits. Keep URLs intact.
-3. Submit the post and wait for confirmation that it was published.
-4. Do not change account settings or interact with unrelated content.
-5. After posting, describe exactly what you published so the user has a record.
+When asked to research an expert on https://advicehub.ai/, follow these rules:
+
+1. Navigate to https://advicehub.ai/ if you are not already there.
+2. Use the site's search interface to look up the expert name provided in the user's request.
+3. Review the results and capture any relevant details, summaries, or contact information about that expert.
+4. Avoid modifying site settings or interacting with unrelated content.
+5. Return a concise description of the findings so the user has a record.
 """
 
 
 async def main():
-    async with LocalPlaywrightComputer(start_url="https://x.com/home") as computer:
+    async with LocalPlaywrightComputer(start_url="https://advicehub.ai/") as computer:
         with trace("Computer use example"):
             agent = Agent(
                 name="Browser user",
-                instructions=POST_TO_X_AGENT_INSTRUCTIONS,
+                instructions=ADVICEHUB_AGENT_INSTRUCTIONS,
                 tools=[ComputerTool(computer)],
                 # Use the computer using model, and set truncation to auto because its required
                 model="computer-use-preview",
                 model_settings=ModelSettings(truncation="auto"),
             )
+            demo_query = "Mayank"
             result = await Runner.run(
                 agent,
-                "Post 'Testing automated post from Deckard demo.'",
+                f"Search for '{demo_query}' on https://advicehub.ai/ and summarize what you find about this expert.",
                 max_turns=_env_int("COMPUTER_USE_MAX_TURNS", default=25),
             )
             print(result.final_output)
@@ -160,7 +166,13 @@ class LocalPlaywrightComputer(AsyncComputer):
             page = await context.new_page()
 
         await page.set_viewport_size({"width": width, "height": height})
-        await page.goto(self._start_url)
+
+        try:
+            await page.goto(self._start_url, wait_until="domcontentloaded")
+        except Exception:
+            # The computer-use model can still recover if the initial navigation fails;
+            # log-less environments fall back to starting from a blank tab.
+            pass
         return browser, context, page
 
     async def __aenter__(self):
@@ -212,9 +224,10 @@ class LocalPlaywrightComputer(AsyncComputer):
         return (1024, 768)
 
     async def screenshot(self) -> str:
-        """Capture only the viewport (not full_page)."""
+        """Capture only the viewport (not full_page) and return raw base64."""
         png_bytes = await self.page.screenshot(full_page=False)
-        return base64.b64encode(png_bytes).decode("utf-8")
+        # The agents SDK wraps this value in a data URL, so we only return the base64 payload here.
+        return base64.b64encode(png_bytes).decode("ascii")
 
     async def click(self, x: int, y: int, button: Button = "left") -> None:
         playwright_button: Literal["left", "middle", "right"] = "left"
@@ -230,13 +243,13 @@ class LocalPlaywrightComputer(AsyncComputer):
 
     async def scroll(self, x: int, y: int, scroll_x: int, scroll_y: int) -> None:
         await self.page.mouse.move(x, y)
-        await self.page.evaluate(f"window.scrollBy({scroll_x}, {scroll_y})")
+        await self.page.mouse.wheel(delta_x=scroll_x, delta_y=scroll_y)
 
     async def type(self, text: str) -> None:
         await self.page.keyboard.type(text)
 
     async def wait(self) -> None:
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
     async def move(self, x: int, y: int) -> None:
         await self.page.mouse.move(x, y)
@@ -258,33 +271,45 @@ class LocalPlaywrightComputer(AsyncComputer):
         await self.page.mouse.up()
 
 
-async def post_to_x(content: str) -> str:
-    """Run the computer-use agent to publish a post on x.com."""
+async def search_advicehub(query: str) -> str:
+    """Run the computer-use agent to search advicehub.ai for an expert."""
 
     turns_budget = _env_int("COMPUTER_USE_MAX_TURNS", default=25)
 
-    async with LocalPlaywrightComputer(start_url="https://x.com/home") as computer:
-        with trace("Post to X.com"):
+    normalized_query = (query or "").strip()
+    if not normalized_query:
+        return "I need the expert's name to search on advicehub.ai."
+
+    async with LocalPlaywrightComputer(start_url="https://advicehub.ai/") as computer:
+        with trace("Search advicehub.ai"):
             agent = Agent(
-                name="X Poster",
-                instructions=POST_TO_X_AGENT_INSTRUCTIONS,
+                name="AdviceHub Researcher",
+                instructions=ADVICEHUB_AGENT_INSTRUCTIONS,
                 tools=[ComputerTool(computer)],
                 model="computer-use-preview",
                 model_settings=ModelSettings(truncation="auto"),
             )
             try:
-                result = await Runner.run(agent, content, max_turns=turns_budget)
+                task_prompt = (
+                    f"Search for '{normalized_query}' on https://advicehub.ai/ and summarize what you find "
+                    "about this expert, including any headlines, bios, or contact details."
+                )
+                result = await Runner.run(
+                    agent,
+                    task_prompt,
+                    max_turns=turns_budget,
+                )
             except MaxTurnsExceeded as exc:
                 error_hint = (
-                    "Computer-use automation exceeded its turn limit before posting. "
-                    "Verify the X.com session is already logged in (set PLAYWRIGHT_USER_DATA_DIR) "
+                    "Computer-use automation exceeded its turn limit before completing the search. "
+                    "Verify advicehub.ai is reachable (configure PLAYWRIGHT_USER_DATA_DIR if needed) "
                     "and raise COMPUTER_USE_MAX_TURNS if more steps are required."
                 )
                 raise RuntimeError(error_hint) from exc
 
     if result.final_output:
         return str(result.final_output)
-    return "Posted to X.com, but the agent did not provide a summary."
+    return "Searched advicehub.ai, but the agent did not provide a summary."
 
 
 if __name__ == "__main__":

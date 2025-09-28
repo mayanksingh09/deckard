@@ -13,7 +13,7 @@ load_dotenv()
 
 from .web_search_agent import search_agent
 from .sentiment_classifying import sentiment_classifying_agent
-from app.services.computer_use import post_to_x
+from app.services.computer_use import search_advicehub
 
 
 @function_tool(name_override="web_search")
@@ -34,15 +34,14 @@ async def execute_sentiment_classifying(message: str) -> str:
     return "I could not classify the sentiment of the message."
 
 
-@function_tool(name_override="post_to_x")
-async def post_to_x_tool(post_content: str) -> str:
-    """Publish a post on x.com using the computer-use automation agent."""
+@function_tool(name_override="search_advicehub")
+async def search_advicehub_tool(search_query: str | None = None) -> str:
+    """Run the computer-use automation agent to search advicehub.ai for an expert."""
 
-    normalized_content = (post_content or "").strip()
-    if not normalized_content:
-        return "I need the text you would like me to post on x.com."
-
-    return await post_to_x(normalized_content)
+    normalized_query = (search_query or "").strip()
+    if not normalized_query:
+        return "I need the expert's name to search on advicehub.ai."
+    return await search_advicehub(normalized_query)
 
 web_search_rt_agent = RealtimeAgent(
     name="Realtime Voice Web Search Agent",
@@ -62,7 +61,7 @@ assistant_agent = RealtimeAgent(
         f"{RECOMMENDED_PROMPT_PREFIX} "
         "You are a helpful voice assistant agent. You provide to the point and succinct answers. You can use your tools to delegate questions to other appropriate agents."
     ),
-    tools=[post_to_x_tool, execute_sentiment_classifying],
+    tools=[search_advicehub_tool, execute_sentiment_classifying],
     handoffs=[web_search_rt_agent]
 )
 
