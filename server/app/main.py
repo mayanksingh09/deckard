@@ -50,11 +50,28 @@ else:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from app.services.did_talks import DIDTalksService, resolve_persona_image
+
 class RealtimeWebSocketManager:
     def __init__(self):
         self.active_sessions: dict[str, RealtimeSession] = {}
         self.session_contexts: dict[str, Any] = {}
         self.websockets: dict[str, WebSocket] = {}
+        # Accumulate PCM 16-bit, 24kHz mono output per response for each session
+        self.response_audio_buffers: dict[str, bytearray] = {}
+        # Selected persona per session (mayank | ryan | agastya)
+        self.persona: dict[str, str] = {}
+        # Service instance (lazy)
+        self._did_service: DIDTalksService | None = None
+
+    def _service(self) -> DIDTalksService:
+        if self._did_service is None:
+            try:
+                self._did_service = DIDTalksService()
+            except Exception as e:
+                logger.error("Failed to initialize D-ID service: %s", e)
+                raise
+        return self._did_service
 
     async def connect(self, websocket: WebSocket, session_id: str):
         await websocket.accept()
@@ -66,6 +83,9 @@ class RealtimeWebSocketManager:
         session = await session_context.__aenter__()
         self.active_sessions[session_id] = session
         self.session_contexts[session_id] = session_context
+        # Initialize buffer and default persona
+        self.response_audio_buffers[session_id] = bytearray()
+        self.persona[session_id] = self.persona.get(session_id) or "mayank"
 
         # Start event processing task
         asyncio.create_task(self._process_events(session_id))
@@ -78,6 +98,8 @@ class RealtimeWebSocketManager:
             del self.active_sessions[session_id]
         if session_id in self.websockets:
             del self.websockets[session_id]
+        self.response_audio_buffers.pop(session_id, None)
+        self.persona.pop(session_id, None)
 
     async def send_audio(self, session_id: str, audio_bytes: bytes):
         if session_id in self.active_sessions:
@@ -117,6 +139,18 @@ class RealtimeWebSocketManager:
             websocket = self.websockets[session_id]
 
             async for event in session:
+                # Intercept audio stream for D-ID
+                if event.type == "audio":
+                    # Append raw PCM bytes for this response turn
+                    self.response_audio_buffers.setdefault(session_id, bytearray()).extend(event.audio.data)
+                elif event.type == "audio_end":
+                    # Spawn background task to create a talk from the accumulated audio
+                    pcm = bytes(self.response_audio_buffers.get(session_id, b""))
+                    # Reset buffer for next turn
+                    self.response_audio_buffers[session_id] = bytearray()
+                    if pcm:
+                        asyncio.create_task(self._create_talk_and_notify(session_id, pcm))
+
                 event_data = await self._serialize_event(event)
                 await websocket.send_text(json.dumps(event_data))
         except Exception as e:
@@ -169,6 +203,37 @@ class RealtimeWebSocketManager:
             assert_never(event)
 
         return base_event
+
+    async def _create_talk_and_notify(self, session_id: str, pcm: bytes) -> None:
+        websocket = self.websockets.get(session_id)
+        persona = self.persona.get(session_id, "mayank")
+        if websocket is None:
+            return
+        try:
+            service = self._service()
+            image_path = resolve_persona_image(persona)
+            # Realtime outputs 24kHz mono PCM 16-bit
+            result = await service.generate_talk_from_pcm(
+                pcm_bytes=pcm, sample_rate=24_000, persona_image_path=image_path
+            )
+            payload: dict[str, Any] = {
+                "type": "talk_video",
+                "persona": persona,
+                "talk_id": result.talk_id,
+                "status": result.status,
+                "url": result.result_url,
+            }
+            await websocket.send_text(json.dumps(payload))
+        except Exception as e:
+            err_payload = {
+                "type": "talk_error",
+                "persona": persona,
+                "error": str(e),
+            }
+            try:
+                await websocket.send_text(json.dumps(err_payload))
+            except Exception:
+                logger.exception("Failed sending talk_error to client")
 
 
 manager = RealtimeWebSocketManager()
@@ -316,6 +381,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         )
             elif message["type"] == "interrupt":
                 await manager.interrupt(session_id)
+            elif message["type"] == "set_persona":
+                persona = str(message.get("persona") or "mayank").lower()
+                if persona not in {"mayank", "ryan", "agastya"}:
+                    await websocket.send_text(
+                        json.dumps({"type": "error", "error": f"Unknown persona: {persona}"})
+                    )
+                else:
+                    manager.persona[session_id] = persona
+                    await websocket.send_text(
+                        json.dumps({"type": "client_info", "info": "persona_set", "persona": persona})
+                    )
 
     except WebSocketDisconnect:
         await manager.disconnect(session_id)

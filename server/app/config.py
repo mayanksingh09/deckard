@@ -21,6 +21,8 @@ class Settings:
     supabase_url: Optional[str] = os.getenv("SUPABASE_URL")
     supabase_service_role_key: Optional[str] = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    # D-ID Talks API key
+    did_api_key: Optional[str] = os.getenv("DID_API_KEY")
 
 
 @lru_cache(maxsize=1)

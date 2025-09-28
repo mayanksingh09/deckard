@@ -134,6 +134,8 @@ function parseHistoryMessageItem(item: unknown): ConversationMessage | null {
 
 export default function Home() {
   const [sessionId, setSessionId] = useState<string>('');
+  const [persona, setPersona] = useState<'mayank' | 'ryan' | 'agastya'>('mayank');
+  const [videoUrl, setVideoUrl] = useState<string>('');
   useEffect(() => {
     // Generate a stable client-only session id to avoid SSR/client mismatch
     setSessionId(randomId('session'));
@@ -479,6 +481,21 @@ export default function Home() {
       }
       const type = typeof event.type === 'string' ? event.type : null;
       switch (type) {
+        case 'talk_video': {
+          const url = typeof event.url === 'string' ? event.url : '';
+          if (url) {
+            setVideoUrl(url);
+            logEvent('video', 'D-ID talk ready', url);
+          } else {
+            logEvent('video', 'D-ID talk status', String(event.status ?? 'unknown'));
+          }
+          break;
+        }
+        case 'talk_error': {
+          const error = typeof event.error === 'string' ? event.error : 'Unknown D-ID error';
+          logEvent('error', 'D-ID talk failed', error, 'error');
+          break;
+        }
         case 'audio': {
           if (typeof event.audio === 'string') {
             audioQueueRef.current.push(event.audio);
@@ -588,6 +605,10 @@ export default function Home() {
       } catch (error) {
         console.warn('Microphone capture failed after connection.', error);
       }
+      // Send initial persona selection to backend
+      try {
+        sendPayload({ type: 'set_persona', persona });
+      } catch {}
     };
 
     socket.onmessage = (event) => {
@@ -614,7 +635,7 @@ export default function Home() {
       stopAudioPlayback();
       wsRef.current = null;
     };
-  }, [buildWsUrl, handleRealtimeEvent, isConnected, isConnecting, logEvent, sessionId, startCapture, stopAudioPlayback, stopCapture, wsBase]);
+  }, [buildWsUrl, handleRealtimeEvent, isConnected, isConnecting, logEvent, persona, sendPayload, sessionId, startCapture, stopAudioPlayback, stopCapture, wsBase]);
 
   const closeConnection = useCallback(() => {
     const ws = wsRef.current;
@@ -692,6 +713,18 @@ export default function Home() {
     },
     [handleFileSelected]
   );
+
+  const personaImage = useMemo(() => {
+    switch (persona) {
+      case 'ryan':
+        return '/ryan_g.png';
+      case 'agastya':
+        return '/agastya.jpeg';
+      case 'mayank':
+      default:
+        return '/mayank.jpeg';
+    }
+  }, [persona]);
 
   useEffect(() => {
     return () => {
@@ -833,7 +866,8 @@ export default function Home() {
                             {message.images.map((image) => (
                               <div
                                 key={image}
-                                className="relative h-48 w-full overflow-hidden rounded-2xl border border-stone-800/70 bg-stone-900"
+                                className="relative w-64 md:w-80 overflow-hidden rounded-2xl border border-stone-800/70 bg-stone-900"
+                                style={{ aspectRatio: '3 / 4' }}
                               >
                                 <Image src={image} alt="Uploaded" fill className="object-cover" unoptimized />
                               </div>
@@ -856,6 +890,52 @@ export default function Home() {
           </div>
 
           <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-4 rounded-3xl border border-stone-800/80 bg-stone-950/80 p-6 shadow-[0_18px_60px_rgba(8,8,8,0.45)]">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-[0.35em] text-stone-500">Talking Video</span>
+                <div className="flex items-center gap-2">
+                  {(['mayank','ryan','agastya'] as const).map((key) => (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        setPersona(key);
+                        sendPayload({ type: 'set_persona', persona: key });
+                        logEvent('client', 'Persona selected', key);
+                      }}
+                      className={`rounded-full border px-3 py-1 text-[0.65rem] uppercase tracking-[0.35em] transition ${
+                        persona === key ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-200' : 'border-stone-700 bg-stone-900 text-stone-300 hover:text-stone-100'
+                      }`}
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div
+                className="relative mx-auto w-72 md:w-96 overflow-hidden rounded-2xl border border-stone-800 bg-stone-900"
+                style={{ aspectRatio: '9 / 16' }}
+                data-testid="talking-video-box"
+              >
+                {videoUrl ? (
+                  // eslint-disable-next-line jsx-a11y/media-has-caption
+                  <video
+                    src={videoUrl}
+                    controls
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    className="h-full w-full object-cover"
+                    poster={personaImage}
+                  />
+                ) : (
+                  <Image src={personaImage} alt="Persona" fill className="object-cover" unoptimized />
+                )}
+              </div>
+              <div className="text-[0.7rem] text-stone-400">
+                {videoUrl ? 'Video ready from D-ID. You can switch persona anytime.' : 'Awaiting audio to generate a talk. Persona can be changed.'}
+              </div>
+            </div>
             <div className="flex flex-col gap-4 rounded-3xl border border-stone-800/80 bg-stone-950/80 p-6 shadow-[0_18px_60px_rgba(8,8,8,0.45)]">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-[0.35em] text-stone-500">Realtime Feed</span>
