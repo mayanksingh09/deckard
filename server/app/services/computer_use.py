@@ -39,6 +39,8 @@ When asked to research an expert on https://advicehub.ai/, follow these rules:
 3. Review the results and capture any relevant details, summaries, or contact information about that expert.
 4. Avoid modifying site settings or interacting with unrelated content.
 5. Return a concise description of the findings so the user has a record.
+
+Otherwise just following the user's browsing instructions.
 """
 
 
