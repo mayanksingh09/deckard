@@ -1,5 +1,6 @@
 """Agent orchestrating realtime conversation flows."""
 from __future__ import annotations
+from re import M
 
 from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 from agents import Runner, function_tool
@@ -39,7 +40,7 @@ assistant_agent = RealtimeAgent(
         f"{RECOMMENDED_PROMPT_PREFIX} "
         "You are a helpful triaging agent. You can use your tools to delegate questions to other appropriate agents."
     ),
-    handoffs=[web_search_rt_agent],
+    handoffs=[web_search_rt_agent]
 )
 
 web_search_rt_agent.handoffs.append(assistant_agent)

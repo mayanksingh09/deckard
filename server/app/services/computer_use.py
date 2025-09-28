@@ -32,7 +32,7 @@ async def main():
                 model="computer-use-preview",
                 model_settings=ModelSettings(truncation="auto"),
             )
-            result = await Runner.run(agent, "Search for SF sports news and summarize.")
+            result = await Runner.run(agent, "Tweet this picture from my account and add a caption. My AI clone posted this from the GPT-5 hackathon")
             print(result.final_output)
 
 

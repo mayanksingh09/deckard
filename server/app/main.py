@@ -62,7 +62,7 @@ else:
         from ai_agents.realtime_conversation import get_starting_agent
     
 
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from app.services.did_talks import (
@@ -83,11 +83,18 @@ class ResponseState(Enum):
 
 
 @dataclass
+class BufferedTextPart:
+    """Structured text segment captured during a buffered response."""
+    role: str
+    text: str
+
+
+@dataclass
 class ResponseBuffer:
     """Buffer for collecting response audio and text."""
     response_id: str
     audio_chunks: list[bytes] = field(default_factory=list)
-    text_parts: list[str] = field(default_factory=list)
+    text_parts: list[BufferedTextPart] = field(default_factory=list)
     started_at: float = field(default_factory=lambda: __import__('time').time())
     video_generation_started: bool = False
     video_url: Optional[str] = None
@@ -100,9 +107,20 @@ class ResponseBuffer:
         """Total bytes of audio collected."""
         return sum(len(chunk) for chunk in self.audio_chunks)
 
+    def add_text_part(self, text: str, role: str = "assistant") -> None:
+        """Store a text fragment and its originating role."""
+        cleaned_text = (text or "").strip()
+        if not cleaned_text:
+            return
+
+        normalized_role = (role or "").strip().lower() or "assistant"
+        self.text_parts.append(BufferedTextPart(role=normalized_role, text=cleaned_text))
+
     def get_full_text(self) -> str:
-        """Get the complete text from all parts."""
-        return " ".join(part.strip() for part in self.text_parts if part.strip()).strip()
+        """Get the complete assistant-authored text."""
+        return " ".join(
+            part.text for part in self.text_parts if part.role == "assistant"
+        ).strip()
 
     def get_full_audio(self) -> bytes:
         """Get the complete audio from all chunks."""
@@ -275,8 +293,6 @@ class RealtimeWebSocketManager:
         buffer.audio_chunks.append(audio_data)
         self._set_response_state(session_id, ResponseState.BUFFERING)
 
-        logger.debug(f"[Session {session_id}] Buffered audio chunk, total: {buffer.total_audio_bytes} bytes")
-
     async def _send_filler_audio(self, session_id: str, filler_type: str = "thinking") -> None:
         """Send filler audio while processing response."""
         websocket = self.websockets.get(session_id)
@@ -292,15 +308,19 @@ class RealtimeWebSocketManager:
         }))
         logger.info(f"[Session {session_id}] Sent filler notification: {filler_type}")
 
-    async def _handle_buffered_text(self, session_id: str, text: str) -> None:
+    async def _handle_buffered_text(self, session_id: str, text: str, role: str = "assistant") -> None:
         """Handle text in buffering mode - start video generation and coordinate playback."""
         buffer = self._get_response_buffer(session_id)
         if not buffer:
             logger.warning(f"[Session {session_id}] No response buffer found for text handling")
             return
 
+        normalized_role = (role or "").strip().lower() or "assistant"
+        if normalized_role != "assistant":
+            return
+
         # Add text to buffer
-        buffer.text_parts.append(text)
+        buffer.add_text_part(text, role=normalized_role)
         buffer.complete_text = buffer.get_full_text()
         logger.info(f"[Session {session_id}] Added text to buffer, complete text: '{buffer.complete_text[:100]}{'...' if len(buffer.complete_text) > 100 else ''}'")
 
@@ -311,6 +331,87 @@ class RealtimeWebSocketManager:
 
             # Start video generation in background
             asyncio.create_task(self._generate_buffered_video(session_id, buffer))
+
+    def _coerce_to_dict(self, value: Any) -> dict[str, Any] | None:
+        """Best-effort conversion of SDK response objects into plain dictionaries."""
+        if isinstance(value, dict):
+            return value
+
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            for kwargs in ({"mode": "json"}, {}):
+                try:
+                    dumped = model_dump(**kwargs)
+                except TypeError:
+                    continue
+                except Exception:
+                    dumped = None
+                if isinstance(dumped, dict):
+                    return dumped
+
+        if hasattr(value, "__dict__"):
+            try:
+                data = dict(value.__dict__)
+                return data
+            except Exception:
+                return None
+
+        return None
+
+    def _extract_assistant_text_from_response(self, response: Any) -> str:
+        """Collect assistant-authored transcripts from a realtime response payload."""
+        response_dict = self._coerce_to_dict(response)
+        if not response_dict:
+            return ""
+
+        text_parts: list[str] = []
+        for item in response_dict.get("output", []) or []:
+            item_dict = self._coerce_to_dict(item)
+            if not item_dict or item_dict.get("role") != "assistant":
+                continue
+
+            for part in item_dict.get("content", []) or []:
+                part_dict = self._coerce_to_dict(part)
+                if not part_dict:
+                    continue
+
+                part_type = part_dict.get("type")
+                if part_type in {"text", "output_text"}:
+                    candidate = part_dict.get("text")
+                elif part_type in {"audio", "output_audio"}:
+                    candidate = part_dict.get("transcript")
+                else:
+                    candidate = None
+
+                if isinstance(candidate, str):
+                    stripped = candidate.strip()
+                    if stripped:
+                        text_parts.append(stripped)
+
+        return " ".join(text_parts).strip()
+
+    async def _handle_assistant_response_output(self, session_id: str, response: Any) -> None:
+        """Route assistant response text into the appropriate video generation path."""
+        assistant_text = self._extract_assistant_text_from_response(response)
+        if not assistant_text:
+            logger.info(f"[Session {session_id}] No assistant text found in response output")
+            return
+
+        logger.info(
+            f"[Session {session_id}] Assistant response text extracted: '{assistant_text[:200]}{'...' if len(assistant_text) > 200 else ''}'"
+        )
+
+        if self.enable_response_buffering:
+            persona = self.persona.get(session_id, "joi")
+            if self._has_text_generation_available(persona):
+                await self._handle_buffered_text(session_id, assistant_text)
+            else:
+                logger.info(
+                    f"[Session {session_id}] Persona {persona} lacks text generation support; skipping buffered video trigger"
+                )
+            return
+
+        await self._trigger_video_from_text(session_id, assistant_text)
 
     async def _generate_buffered_video(self, session_id: str, buffer: ResponseBuffer) -> None:
         """Generate video for buffered response and coordinate final playback."""
@@ -466,7 +567,7 @@ class RealtimeWebSocketManager:
                     openai_event_type = nested_data.get('type')
 
                 if not openai_event_type:
-                    logger.debug(f"[Session {session_id}] No OpenAI event type in nested data: {nested_data}")
+                    logger.info(f"[Session {session_id}] No OpenAI event type in nested data: {nested_data}")
                     return
 
                 logger.info(f"[Session {session_id}] Processing OpenAI event: {openai_event_type}")
@@ -503,7 +604,6 @@ class RealtimeWebSocketManager:
 
                 if text_delta and session_id in self.active_response_texts:
                     self.active_response_texts[session_id].append(text_delta)
-                    logger.debug(f"[Session {session_id}] Text delta: '{text_delta}'")
 
             elif event_type == "response.text.done":
                 # Try multiple ways to get text content
@@ -515,7 +615,6 @@ class RealtimeWebSocketManager:
 
                 if text_content:
                     logger.info(f"[Session {session_id}] Text done: '{text_content[:100]}{'...' if len(text_content) > 100 else ''}'")
-                    await self._trigger_video_from_text(session_id, text_content)
 
             elif event_type == "response.audio_transcript.done":
                 # Try multiple ways to get transcript
@@ -527,7 +626,6 @@ class RealtimeWebSocketManager:
 
                 if transcript:
                     logger.info(f"[Session {session_id}] Audio transcript done: '{transcript[:100]}{'...' if len(transcript) > 100 else ''}'")
-                    await self._trigger_video_from_text(session_id, transcript)
 
             elif event_type == "response.output_item.done":
                 # This contains the complete item with all content
@@ -539,17 +637,18 @@ class RealtimeWebSocketManager:
 
                 if item:
                     logger.info(f"[Session {session_id}] Output item done, extracting text")
-                    await self._extract_text_from_output_item(session_id, item)
 
             elif event_type == "response.done":
                 response_id = self.active_response_ids.get(session_id)
                 logger.info(f"[Session {session_id}] Response complete: {response_id}")
 
-                # If we accumulated text but haven't triggered video yet, do it now
-                accumulated_text = ''.join(self.active_response_texts.get(session_id, []))
-                if accumulated_text.strip():
-                    logger.info(f"[Session {session_id}] Triggering video from accumulated text: '{accumulated_text[:100]}{'...' if len(accumulated_text) > 100 else ''}'")
-                    await self._trigger_video_from_text(session_id, accumulated_text)
+                response_payload = None
+                if hasattr(event_data, 'response'):
+                    response_payload = event_data.response
+                elif isinstance(event_data, dict):
+                    response_payload = event_data.get('response')
+
+                await self._handle_assistant_response_output(session_id, response_payload)
 
                 # Clean up
                 self.active_response_texts.pop(session_id, None)
@@ -579,7 +678,6 @@ class RealtimeWebSocketManager:
                 text_content = event_data.get('text', '')
                 if text_content:
                     logger.info(f"[Session {session_id}] Text done: '{text_content[:100]}{'...' if len(text_content) > 100 else ''}'")
-                    await self._trigger_video_from_text(session_id, text_content)
 
             elif event_type == "response.audio_transcript.delta":
                 transcript_delta = event_data.get('delta', '')
@@ -591,138 +689,35 @@ class RealtimeWebSocketManager:
                 transcript = event_data.get('transcript', '')
                 if transcript:
                     logger.info(f"[Session {session_id}] Audio transcript done: '{transcript[:100]}{'...' if len(transcript) > 100 else ''}'")
-                    await self._trigger_video_from_text(session_id, transcript)
 
             elif event_type == "response.output_item.done":
                 item = event_data.get('item', {})
                 if item:
                     logger.info(f"[Session {session_id}] Output item done, extracting text")
-                    await self._extract_text_from_nested_item(session_id, item)
 
             elif event_type == "conversation.item.created":
                 item = event_data.get('item', {})
                 if item and item.get('role') == 'assistant':
                     logger.info(f"[Session {session_id}] Conversation item created for assistant")
-                    await self._extract_text_from_nested_item(session_id, item)
 
             elif event_type == "response.done":
                 response_id = self.active_response_ids.get(session_id)
                 logger.info(f"[Session {session_id}] Response complete: {response_id}")
 
-                # If we accumulated text but haven't triggered video yet, do it now
-                accumulated_text = ''.join(self.active_response_texts.get(session_id, []))
-                if accumulated_text.strip():
-                    logger.info(f"[Session {session_id}] Triggering video from accumulated text: '{accumulated_text[:100]}{'...' if len(accumulated_text) > 100 else ''}'")
-                    await self._trigger_video_from_text(session_id, accumulated_text)
+                await self._handle_assistant_response_output(
+                    session_id,
+                    event_data.get('response'),
+                )
 
                 # Clean up
                 self.active_response_texts.pop(session_id, None)
                 self.active_response_ids.pop(session_id, None)
 
             else:
-                # Log other event types for discovery
-                logger.debug(f"[Session {session_id}] Unhandled OpenAI event: {event_type}")
-
-            # Fallback: extract text from any event that might contain it
-            await self._extract_text_from_any_event(session_id, event_type, event_data)
+                logger.info(f"[Session {session_id}] Unhandled OpenAI event: {event_type}")
 
         except Exception as e:
             logger.exception(f"[Session {session_id}] Error processing OpenAI event {event_type}: {e}")
-
-    async def _extract_text_from_nested_item(self, session_id: str, item: dict) -> None:
-        """Extract text from a nested item structure."""
-        try:
-            if item.get('type') != 'message' or item.get('role') != 'assistant':
-                return
-
-            content = item.get('content', [])
-            text_parts = []
-
-            for part in content:
-                if isinstance(part, dict):
-                    part_type = part.get('type')
-                    if part_type == 'text':
-                        text = part.get('text', '')
-                        if text.strip():
-                            text_parts.append(text)
-                    elif part_type == 'audio':
-                        transcript = part.get('transcript', '')
-                        if transcript.strip():
-                            text_parts.append(transcript)
-
-            if text_parts:
-                full_text = ' '.join(text_parts)
-                logger.info(f"[Session {session_id}] Extracted text from nested item: '{full_text[:100]}{'...' if len(full_text) > 100 else ''}'")
-                await self._trigger_video_from_text(session_id, full_text)
-
-        except Exception as e:
-            logger.exception(f"[Session {session_id}] Error extracting text from nested item: {e}")
-
-    async def _extract_text_from_any_event(self, session_id: str, event_type: str, event_data: dict) -> None:
-        """Fallback: try to extract text from any event that might contain it."""
-        try:
-            # Look for text or transcript in the event data
-            text_candidates = []
-
-            # Direct text/transcript fields
-            if event_data.get('text'):
-                text_candidates.append(event_data['text'])
-            if event_data.get('transcript'):
-                text_candidates.append(event_data['transcript'])
-
-            # Text in item content
-            item = event_data.get('item', {})
-            if isinstance(item, dict):
-                content = item.get('content', [])
-                for part in content:
-                    if isinstance(part, dict):
-                        if part.get('text'):
-                            text_candidates.append(part['text'])
-                        if part.get('transcript'):
-                            text_candidates.append(part['transcript'])
-
-            # If we found any text, trigger video generation
-            if text_candidates:
-                full_text = ' '.join(text_candidates)
-                if full_text.strip():
-                    logger.info(f"[Session {session_id}] Found text in {event_type}: '{full_text[:100]}{'...' if len(full_text) > 100 else ''}'")
-                    await self._trigger_video_from_text(session_id, full_text)
-
-        except Exception as e:
-            logger.debug(f"[Session {session_id}] No text found in event {event_type}: {e}")
-
-    async def _extract_text_from_output_item(self, session_id: str, item: Any) -> None:
-        """Extract text from a complete output item."""
-        try:
-            item_type = getattr(item, 'type', None)
-            if item_type != 'message':
-                return
-
-            role = getattr(item, 'role', None)
-            if role != 'assistant':
-                return
-
-            content = getattr(item, 'content', [])
-            text_parts = []
-
-            for part in content:
-                part_type = getattr(part, 'type', None)
-                if part_type == 'text':
-                    text = getattr(part, 'text', '')
-                    if text.strip():
-                        text_parts.append(text)
-                elif part_type == 'audio':
-                    transcript = getattr(part, 'transcript', '')
-                    if transcript.strip():
-                        text_parts.append(transcript)
-
-            if text_parts:
-                full_text = ' '.join(text_parts)
-                logger.info(f"[Session {session_id}] Extracted text from output item: '{full_text[:100]}{'...' if len(full_text) > 100 else ''}'")
-                await self._trigger_video_from_text(session_id, full_text)
-
-        except Exception as e:
-            logger.exception(f"[Session {session_id}] Error extracting text from output item: {e}")
 
     async def _trigger_video_from_text(self, session_id: str, text: str) -> None:
         """Trigger D-ID video generation from extracted text."""
@@ -747,7 +742,6 @@ class RealtimeWebSocketManager:
                 # Intercept assistant audio stream and build a D-ID talk when the turn ends
                 if event.type == "audio":
                     persona = self.persona.get(session_id, "joi")
-                    logger.debug(f"[Session {session_id}] Received audio chunk ({len(event.audio.data)} bytes) for persona {persona}")
 
                     # Check if we should use buffering for coordinated playback
                     if self.enable_response_buffering and self._has_text_generation_available(persona):
@@ -757,7 +751,6 @@ class RealtimeWebSocketManager:
                         # Legacy audio handling - immediate playback and optional D-ID from audio
                         if self._should_use_audio_for_did(persona):
                             self.response_audio_buffers.setdefault(session_id, bytearray()).extend(event.audio.data)
-                            logger.debug(f"[Session {session_id}] Audio buffer now has {len(self.response_audio_buffers[session_id])} bytes")
                 elif event.type == "audio_end":
                     # Generate audio-based D-ID talk if no text source URL is configured
                     persona = self.persona.get(session_id, "joi")
@@ -784,15 +777,14 @@ class RealtimeWebSocketManager:
                             for i, part in enumerate(content or []):
                                 try:
                                     ptype = getattr(part, "type", None)
-                                    logger.debug(f"[Session {session_id}] Content part {i}: type={ptype}")
 
                                     # Accept plain text or transcripts
-                                    if ptype in {"text", "output_text", "input_text"}:
+                                    if ptype in {"text", "output_text"}:
                                         t = getattr(part, "text", None)
                                         if isinstance(t, str) and t.strip():
                                             text_parts.append(t)
                                             logger.info(f"[Session {session_id}] Added text part: '{t[:100]}{'...' if len(t) > 100 else ''}'")
-                                    elif ptype in {"input_audio", "audio"}:
+                                    elif ptype == "audio":
                                         tr = getattr(part, "transcript", None)
                                         if isinstance(tr, str) and tr.strip():
                                             text_parts.append(tr)
@@ -805,23 +797,13 @@ class RealtimeWebSocketManager:
                             logger.info(f"[Session {session_id}] Extracted full text ({len(full_text)} chars): '{full_text[:200]}{'...' if len(full_text) > 200 else ''}'")
 
                             if full_text:
-                                persona = self.persona.get(session_id, "joi")
-                                logger.info(f"[Session {session_id}] Current persona: {persona}")
-
-                                if self._has_text_generation_available(persona):
-                                    if self.enable_response_buffering:
-                                        # Use new buffering system for coordinated audio/video
-                                        await self._handle_buffered_text(session_id, full_text)
-                                    else:
-                                        # Legacy immediate D-ID generation
-                                        logger.info(f"[Session {session_id}] Text generation available for persona {persona}, starting D-ID video generation")
-                                        asyncio.create_task(self._create_talk_from_text_and_notify(session_id, full_text))
-                                else:
-                                    logger.info(f"[Session {session_id}] No text generation available for persona {persona} (no source URL configured)")
+                                logger.info(
+                                    f"[Session {session_id}] Assistant text captured from history; awaiting response.done for video trigger"
+                                )
                             else:
                                 logger.info(f"[Session {session_id}] No text extracted from assistant message")
                         else:
-                            logger.debug(f"[Session {session_id}] Skipping non-assistant message: type={item_type}, role={role}")
+                            logger.info(f"[Session {session_id}] Skipping non-assistant message: type={item_type}, role={role}")
                     except Exception as e:
                         # Never break the event loop on parsing mishaps
                         logger.exception(f"[Session {session_id}] Failed to inspect history_added for text: {e}")

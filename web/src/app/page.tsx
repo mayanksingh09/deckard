@@ -155,11 +155,6 @@ export default function Home() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const playbackContextRef = useRef<AudioContext | null>(null);
-  const audioQueueRef = useRef<string[]>([]);
-  const isPlayingRef = useRef(false);
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const currentGainRef = useRef<GainNode | null>(null);
   const isCapturingRef = useRef(false);
   const isMutedRef = useRef(false);
 
@@ -169,6 +164,7 @@ export default function Home() {
   const [isCapturing, setIsCapturing] = useState(false);
   const [statusText, setStatusText] = useState('Disconnected');
   const [lastError, setLastError] = useState<string | null>(null);
+  const [isThinking, setIsThinking] = useState(false);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const messagesMapRef = useRef<Record<string, ConversationMessage>>({});
   const [events, setEvents] = useState<EventLogEntry[]>([]);
@@ -283,113 +279,8 @@ export default function Home() {
     return true;
   }, []);
 
-  const stopAudioPlayback = useCallback(() => {
-    audioQueueRef.current = [];
-    const source = currentSourceRef.current;
-    if (source) {
-      try {
-        source.stop();
-      } catch (error) {
-        console.warn('Failed to stop audio source cleanly.', error);
-      }
-      source.disconnect();
-    }
-    currentSourceRef.current = null;
-    const gain = currentGainRef.current;
-    if (gain) {
-      gain.disconnect();
-    }
-    currentGainRef.current = null;
-    isPlayingRef.current = false;
-  }, []);
 
-  const playAudioChunk = useCallback((audioContext: AudioContext, audioBase64: string) => {
-    return new Promise<void>((resolve, reject) => {
-      try {
-        if (!audioBase64) {
-          resolve();
-          return;
-        }
-        const binary = atob(audioBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i += 1) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        const int16 = new Int16Array(bytes.buffer);
-        if (int16.length === 0) {
-          resolve();
-          return;
-        }
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i += 1) {
-          float32[i] = int16[i] / 32768;
-        }
-        const buffer = audioContext.createBuffer(1, float32.length, 24_000);
-        buffer.getChannelData(0).set(float32);
-        const source = audioContext.createBufferSource();
-        source.buffer = buffer;
-        const gain = audioContext.createGain();
-        const now = audioContext.currentTime;
-        const fade = Math.min(0.02, Math.max(0.005, buffer.duration / 8));
-        gain.gain.cancelScheduledValues(now);
-        gain.gain.setValueAtTime(0.0001, now);
-        gain.gain.linearRampToValueAtTime(1, now + fade);
-        const end = now + buffer.duration;
-        gain.gain.setValueAtTime(1, Math.max(now + fade, end - fade));
-        gain.gain.linearRampToValueAtTime(0.0001, end);
-        source.connect(gain);
-        gain.connect(audioContext.destination);
-        currentSourceRef.current = source;
-        currentGainRef.current = gain;
-        source.onended = () => {
-          if (currentSourceRef.current === source) {
-            currentSourceRef.current = null;
-          }
-          if (currentGainRef.current === gain) {
-            currentGainRef.current = null;
-          }
-          resolve();
-        };
-        source.start();
-      } catch (error) {
-        reject(error);
-      }
-    });
-  }, []);
 
-  const processAudioQueue = useCallback(async () => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) {
-      return;
-    }
-    let audioContext = playbackContextRef.current;
-    if (!audioContext) {
-      audioContext = new AudioContext({ sampleRate: 24_000, latencyHint: 'interactive' });
-      playbackContextRef.current = audioContext;
-    }
-    if (audioContext.state === 'suspended') {
-      try {
-        await audioContext.resume();
-      } catch (error) {
-        logEvent('audio', 'Unable to resume audio context', String(error), 'warn');
-      }
-    }
-    isPlayingRef.current = true;
-    while (audioQueueRef.current.length > 0) {
-      const chunk = audioQueueRef.current.shift();
-      if (!chunk) {
-        continue;
-      }
-      try {
-        await playAudioChunk(audioContext, chunk);
-      } catch (error) {
-        logEvent('audio', 'Audio playback failed', error instanceof Error ? error.message : 'Unknown decode error', 'warn');
-      }
-      if (!isPlayingRef.current) {
-        break;
-      }
-    }
-    isPlayingRef.current = false;
-  }, [logEvent, playAudioChunk]);
 
   const startCapture = useCallback(async () => {
     if (typeof window === 'undefined') {
@@ -488,8 +379,9 @@ export default function Home() {
 
           if (url) {
             setVideoUrl(url);
+            setIsThinking(false);
             if (coordinated) {
-              logEvent('video', 'Coordinated video ready', `Audio and video synchronized: ${url}`);
+              logEvent('video', 'Coordinated video ready', `Video synchronized: ${url}`);
             } else {
               logEvent('video', 'D-ID talk ready', url);
             }
@@ -501,22 +393,6 @@ export default function Home() {
         case 'talk_error': {
           const error = typeof event.error === 'string' ? event.error : 'Unknown D-ID error';
           logEvent('error', 'D-ID talk failed', error, 'error');
-          break;
-        }
-        case 'audio': {
-          if (typeof event.audio === 'string') {
-            audioQueueRef.current.push(event.audio);
-            void processAudioQueue();
-          }
-          break;
-        }
-        case 'audio_interrupted': {
-          stopAudioPlayback();
-          logEvent('audio', 'Playback interrupted');
-          break;
-        }
-        case 'audio_end': {
-          logEvent('audio', 'Playback finished');
           break;
         }
         case 'history_updated': {
@@ -554,8 +430,11 @@ export default function Home() {
           // Handle special response processing notifications
           if (info === 'response_processing') {
             const message = typeof event.message === 'string' ? event.message : 'Generating response...';
+            setIsThinking(true);
             logEvent('response', 'Processing Response', message);
-            // Could add UI indication here that response is being generated
+          } else if (info === 'did_talk_start') {
+            setIsThinking(true);
+            logEvent('video', 'Video generation started');
           } else {
             logEvent('client', `Client info`, info);
           }
@@ -593,7 +472,7 @@ export default function Home() {
         }
       }
     },
-    [ingestHistory, ingestItem, logEvent, processAudioQueue, sendPayload, stopAudioPlayback]
+    [ingestHistory, ingestItem, logEvent, sendPayload]
   );
 
   const openConnection = useCallback(() => {
@@ -647,10 +526,9 @@ export default function Home() {
       setIsConnecting(false);
       setStatusText('Disconnected');
       stopCapture();
-      stopAudioPlayback();
       wsRef.current = null;
     };
-  }, [buildWsUrl, handleRealtimeEvent, isConnected, isConnecting, logEvent, persona, sendPayload, sessionId, startCapture, stopAudioPlayback, stopCapture, wsBase]);
+  }, [buildWsUrl, handleRealtimeEvent, isConnected, isConnecting, logEvent, persona, sendPayload, sessionId, startCapture, stopCapture, wsBase]);
 
   const closeConnection = useCallback(() => {
     const ws = wsRef.current;
@@ -662,9 +540,8 @@ export default function Home() {
       setIsConnecting(false);
       setStatusText('Disconnected');
       stopCapture();
-      stopAudioPlayback();
     }
-  }, [stopAudioPlayback, stopCapture]);
+  }, [stopCapture]);
 
   const toggleMute = useCallback(() => {
     setIsMuted((prev) => {
@@ -676,10 +553,10 @@ export default function Home() {
 
   const interrupt = useCallback(() => {
     if (sendPayload({ type: 'interrupt' })) {
-      stopAudioPlayback();
+      setIsThinking(false);
       logEvent('session', 'Interrupt sent', 'Requested model to stop playback');
     }
-  }, [logEvent, sendPayload, stopAudioPlayback]);
+  }, [logEvent, sendPayload]);
 
   const handleFileSelected = useCallback(
     async (file: File | null) => {
@@ -699,7 +576,6 @@ export default function Home() {
           logEvent('image', 'Image not sent', 'Connect before uploading an image.', 'warn');
           return;
         }
-        stopAudioPlayback();
         sendPayload({ type: 'interrupt' });
         const imageId = randomId('img');
         const promptPayload = prompt || 'Please describe this image.';
@@ -718,7 +594,7 @@ export default function Home() {
         }
       }
     },
-    [appendLocalMessage, logEvent, promptText, sendPayload, stopAudioPlayback]
+    [appendLocalMessage, logEvent, promptText, sendPayload]
   );
 
   const handleFileInputChange = useCallback(
@@ -748,9 +624,8 @@ export default function Home() {
         ws.close();
       }
       stopCapture();
-      stopAudioPlayback();
     };
-  }, [stopAudioPlayback, stopCapture]);
+  }, [stopCapture]);
 
   const isMicLive = isCapturing && !isMuted;
 
@@ -935,9 +810,7 @@ export default function Home() {
                   // eslint-disable-next-line jsx-a11y/media-has-caption
                   <video
                     src={videoUrl}
-                    controls
                     autoPlay
-                    loop
                     muted={!userInteracted}
                     playsInline
                     className="h-full w-full object-cover"
@@ -945,6 +818,18 @@ export default function Home() {
                   />
                 ) : (
                   <Image src={personaImage} alt="Persona" fill className="object-cover" unoptimized />
+                )}
+                {isThinking && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="flex gap-1">
+                        <div className="h-2 w-2 rounded-full bg-white/80 animate-pulse [animation-delay:0ms]"></div>
+                        <div className="h-2 w-2 rounded-full bg-white/80 animate-pulse [animation-delay:200ms]"></div>
+                        <div className="h-2 w-2 rounded-full bg-white/80 animate-pulse [animation-delay:400ms]"></div>
+                      </div>
+                      <span className="text-xs text-white/80 font-medium">Thinking...</span>
+                    </div>
+                  </div>
                 )}
               </div>
               <div className="text-[0.7rem] text-stone-400">
