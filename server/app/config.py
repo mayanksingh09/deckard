@@ -20,6 +20,7 @@ class Settings:
     runpod_base_url: str = os.getenv("RUNPOD_BASE_URL", "https://runpod.example.com")
     supabase_url: Optional[str] = os.getenv("SUPABASE_URL")
     supabase_service_role_key: Optional[str] = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    supabase_db_url: Optional[str] = os.getenv("SUPABASE_DB_URL")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     # D-ID Talks API key
     did_api_key: Optional[str] = os.getenv("DID_API_KEY")
