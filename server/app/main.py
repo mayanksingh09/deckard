@@ -719,6 +719,123 @@ class RealtimeWebSocketManager:
         except Exception as e:
             logger.exception(f"[Session {session_id}] Error processing OpenAI event {event_type}: {e}")
 
+    async def _extract_text_from_nested_item(self, session_id: str, item: dict) -> None:
+        """Extract text from a nested item structure."""
+        try:
+            if item.get('type') != 'message' or item.get('role') != 'assistant':
+                return
+
+            content = item.get('content', [])
+            text_parts = []
+
+            for part in content:
+                if isinstance(part, dict):
+                    part_type = part.get('type')
+                    if part_type == 'text':
+                        text = part.get('text', '')
+                        if text.strip():
+                            text_parts.append(text)
+                    elif part_type == 'audio':
+                        transcript = part.get('transcript', '')
+                        if transcript.strip():
+                            text_parts.append(transcript)
+
+            if text_parts:
+                full_text = ' '.join(text_parts)
+                logger.info(f"[Session {session_id}] Extracted text from nested item: '{full_text[:100]}{'...' if len(full_text) > 100 else ''}'")
+                await self._trigger_video_from_text(session_id, full_text)
+
+        except Exception as e:
+            logger.exception(f"[Session {session_id}] Error extracting text from nested item: {e}")
+
+    async def _extract_text_from_any_event(self, session_id: str, event_type: str, event_data: dict) -> None:
+        """Fallback: try to extract text from any event that might contain it."""
+        try:
+            # Look for text or transcript in the event data
+            text_candidates = []
+
+            role = (event_data.get('role') or '').strip().lower() if isinstance(event_data, dict) else ''
+            if role and role != 'assistant':
+                logger.debug(
+                    f"[Session {session_id}] Skipping {event_type} with non-assistant role: {role}"
+                )
+                return
+
+            # Direct text/transcript fields
+            direct_text = event_data.get('text') if isinstance(event_data, dict) else None
+            direct_transcript = event_data.get('transcript') if isinstance(event_data, dict) else None
+            if isinstance(direct_text, str):
+                text_candidates.append(direct_text)
+            if isinstance(direct_transcript, str):
+                text_candidates.append(direct_transcript)
+
+            # Text in item content
+            item = event_data.get('item', {})
+            if isinstance(item, dict):
+                item_role = (item.get('role') or '').strip().lower()
+                if item_role and item_role != 'assistant':
+                    logger.debug(
+                        f"[Session {session_id}] Skipping item content with role: {item_role}"
+                    )
+                    item = None
+
+            if isinstance(item, dict):
+                content = item.get('content', [])
+                for part in content:
+                    if isinstance(part, dict):
+                        p_type = part.get('type')
+                        if p_type in {'text', 'output_text'}:
+                            text_value = part.get('text')
+                            if isinstance(text_value, str):
+                                text_candidates.append(text_value)
+                        elif p_type == 'audio':
+                            transcript_value = part.get('transcript')
+                            if isinstance(transcript_value, str):
+                                text_candidates.append(transcript_value)
+
+            # If we found any text, trigger video generation
+            if text_candidates:
+                full_text = ' '.join(text_candidates)
+                if full_text.strip():
+                    logger.info(f"[Session {session_id}] Found text in {event_type}: '{full_text[:100]}{'...' if len(full_text) > 100 else ''}'")
+                    await self._trigger_video_from_text(session_id, full_text)
+
+        except Exception as e:
+            logger.debug(f"[Session {session_id}] No text found in event {event_type}: {e}")
+
+    async def _extract_text_from_output_item(self, session_id: str, item: Any) -> None:
+        """Extract text from a complete output item."""
+        try:
+            item_type = getattr(item, 'type', None)
+            if item_type != 'message':
+                return
+
+            role = getattr(item, 'role', None)
+            if role != 'assistant':
+                return
+
+            content = getattr(item, 'content', [])
+            text_parts = []
+
+            for part in content:
+                part_type = getattr(part, 'type', None)
+                if part_type == 'text':
+                    text = getattr(part, 'text', '')
+                    if text.strip():
+                        text_parts.append(text)
+                elif part_type == 'audio':
+                    transcript = getattr(part, 'transcript', '')
+                    if transcript.strip():
+                        text_parts.append(transcript)
+
+            if text_parts:
+                full_text = ' '.join(text_parts)
+                logger.info(f"[Session {session_id}] Extracted text from output item: '{full_text[:100]}{'...' if len(full_text) > 100 else ''}'")
+                await self._trigger_video_from_text(session_id, full_text)
+
+        except Exception as e:
+            logger.exception(f"[Session {session_id}] Error extracting text from output item: {e}")
+
     async def _trigger_video_from_text(self, session_id: str, text: str) -> None:
         """Trigger D-ID video generation from extracted text."""
         if not text.strip():
@@ -797,9 +914,23 @@ class RealtimeWebSocketManager:
                             logger.info(f"[Session {session_id}] Extracted full text ({len(full_text)} chars): '{full_text[:200]}{'...' if len(full_text) > 200 else ''}'")
 
                             if full_text:
-                                logger.info(
-                                    f"[Session {session_id}] Assistant text captured from history; awaiting response.done for video trigger"
-                                )
+                                persona = self.persona.get(session_id, "joi")
+                                logger.info(f"[Session {session_id}] Current persona: {persona}")
+
+                                if self._has_text_generation_available(persona):
+                                    if self.enable_response_buffering:
+                                        # Use new buffering system for coordinated audio/video
+                                        await self._handle_buffered_text(
+                                            session_id,
+                                            full_text,
+                                            role=role,
+                                        )
+                                    else:
+                                        # Legacy immediate D-ID generation
+                                        logger.info(f"[Session {session_id}] Text generation available for persona {persona}, starting D-ID video generation")
+                                        asyncio.create_task(self._create_talk_from_text_and_notify(session_id, full_text))
+                                else:
+                                    logger.info(f"[Session {session_id}] No text generation available for persona {persona} (no source URL configured)")
                             else:
                                 logger.info(f"[Session {session_id}] No text extracted from assistant message")
                         else:

@@ -38,7 +38,7 @@ assistant_agent = RealtimeAgent(
     name="Realtime Voice Assistant Agent",
     instructions=(
         f"{RECOMMENDED_PROMPT_PREFIX} "
-        "You are a helpful triaging agent. You can use your tools to delegate questions to other appropriate agents."
+        "You are a helpful voice assistant agent. You provide to the point and succinct answers. You can use your tools to delegate questions to other appropriate agents."
     ),
     handoffs=[web_search_rt_agent]
 )
