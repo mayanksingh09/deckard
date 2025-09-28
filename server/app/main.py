@@ -14,9 +14,9 @@ import json
 import logging
 import struct
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing_extensions import assert_never
@@ -74,6 +74,10 @@ from app.services.did_talks import (
     resolve_persona_image,
 )
 from app.services.did_talks import resolve_persona_source_url  # unused in realtime-only flow
+try:
+    from app.services.supabase_persistence import MemoryRecord, SupabasePersistence
+except Exception:  # pragma: no cover - script-style fallback
+    from services.supabase_persistence import MemoryRecord, SupabasePersistence
 
 
 VALID_SENTIMENTS = {"positive", "negative", "neutral"}
@@ -179,6 +183,255 @@ class RealtimeWebSocketManager:
         # Configuration flags
         self.enable_response_buffering: bool = False  # Feature flag for buffering responses (disabled while fixing)
 
+        # Persistence
+        self.persistence = SupabasePersistence()
+
+    def _run_in_background(self, coro: Awaitable[Any]) -> None:
+        """Schedule a coroutine for background execution with error handling."""
+
+        if not self.persistence.enabled:
+            return
+
+        async def _runner() -> None:
+            try:
+                await coro
+            except Exception:  # pragma: no cover - diagnostics for async task failures
+                logger.exception("Supabase persistence task failed")
+
+        asyncio.create_task(_runner())
+
+    def _record_session_event(
+        self,
+        session_id: str,
+        event_type: str,
+        *,
+        profile_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist a session event if Supabase is configured."""
+
+        if not self.persistence.enabled:
+            return
+
+        self._run_in_background(
+            self.persistence.record_session_event(
+                session_id=session_id,
+                event_type=event_type,
+                profile_id=profile_id,
+                payload=payload,
+            )
+        )
+
+    def _normalize_for_json(self, value: Any) -> Any:
+        """Convert complex SDK objects into JSON-serializable primitives."""
+
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, dict):
+            return {k: self._normalize_for_json(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._normalize_for_json(v) for v in value]
+
+        coerced = self._coerce_to_dict(value)
+        if coerced is not None:
+            return self._normalize_for_json(coerced)
+
+        return str(value)
+
+    def _extract_text_from_content_parts(self, content: Any) -> str:
+        """Flatten content items (text/audio) into a single string."""
+
+        if not isinstance(content, (list, tuple)):
+            return ""
+
+        text_parts: list[str] = []
+        for part in content:
+            part_dict = self._coerce_to_dict(part)
+            if not part_dict:
+                continue
+
+            part_type = (part_dict.get("type") or "").strip().lower()
+            candidate: str | None
+            if part_type in {"text", "output_text", "input_text"}:
+                candidate = part_dict.get("text")
+            elif part_type in {"audio", "input_audio", "output_audio"}:
+                candidate = part_dict.get("transcript") or part_dict.get("text")
+            elif part_type == "tool_result":
+                raw_output = part_dict.get("output")
+                candidate = raw_output if isinstance(raw_output, str) else None
+            else:
+                candidate = None
+
+            if isinstance(candidate, str):
+                stripped = candidate.strip()
+                if stripped:
+                    text_parts.append(stripped)
+
+        return " ".join(text_parts).strip()
+
+    def _extract_text_from_item(self, item: Any) -> str:
+        """Best-effort extraction of textual content from a history item."""
+
+        if item is None:
+            return ""
+
+        content = getattr(item, "content", None)
+        text = self._extract_text_from_content_parts(content)
+        if text:
+            return text
+
+        item_dict = self._coerce_to_dict(item)
+        if not item_dict:
+            return ""
+
+        text = self._extract_text_from_content_parts(item_dict.get("content"))
+        if text:
+            return text
+
+        for key in ("text", "transcript", "value"):
+            value = item_dict.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        return ""
+
+    def _record_message(self, session_id: str, role: str, content: str) -> None:
+        """Persist a message row and related session event."""
+
+        if not self.persistence.enabled:
+            return
+
+        normalized_role = (role or "system").strip().lower()
+        if normalized_role not in {"user", "assistant", "system"}:
+            normalized_role = "system"
+
+        trimmed_content = content.strip()
+        if not trimmed_content:
+            return
+
+        async def _persist() -> None:
+            message_id = await self.persistence.record_message(
+                role=normalized_role,
+                content=trimmed_content,
+            )
+            payload: dict[str, Any] = {
+                "role": normalized_role,
+                "content": trimmed_content,
+                "persona": self.persona.get(session_id),
+            }
+            if message_id:
+                payload["message_id"] = message_id
+            self._record_session_event(
+                session_id,
+                f"message_{normalized_role}",
+                payload=payload,
+            )
+
+        self._run_in_background(_persist())
+
+    def _parse_memory_event(self, event_data: Any) -> list[MemoryRecord]:
+        """Extract structured memory payloads from a raw model event."""
+
+        event_dict = self._normalize_for_json(event_data)
+        if not isinstance(event_dict, dict):
+            return []
+
+        raw_memories: list[dict[str, Any]] = []
+        for key in ("memory", "memories"):
+            candidate = event_dict.get(key)
+            if isinstance(candidate, dict):
+                raw_memories.append(candidate)
+            elif isinstance(candidate, list):
+                raw_memories.extend([item for item in candidate if isinstance(item, dict)])
+
+        if not raw_memories and isinstance(event_dict.get("content"), list):
+            raw_memories.append(
+                {
+                    "label": event_dict.get("label"),
+                    "content": event_dict.get("content"),
+                    "importance": event_dict.get("importance"),
+                    "embedding": event_dict.get("embedding"),
+                }
+            )
+
+        memories: list[MemoryRecord] = []
+        for memory in raw_memories:
+            content_value = memory.get("content")
+            if isinstance(content_value, str):
+                content_text = content_value.strip()
+            else:
+                content_text = self._extract_text_from_content_parts(content_value)
+
+            if not content_text:
+                alt_text = memory.get("text") or memory.get("value")
+                if isinstance(alt_text, str):
+                    content_text = alt_text.strip()
+
+            if not content_text:
+                continue
+
+            label = memory.get("label") or memory.get("name") or memory.get("key") or memory.get("id")
+            if isinstance(label, str):
+                label_text = label.strip() or "memory"
+            else:
+                label_text = "memory"
+
+            importance_raw = memory.get("importance")
+            importance_value: float | None
+            try:
+                importance_value = float(importance_raw) if importance_raw is not None else None
+            except (TypeError, ValueError):
+                importance_value = None
+
+            embedding_raw = memory.get("embedding")
+            embedding_value: list[float] | None = None
+            if isinstance(embedding_raw, list):
+                try:
+                    embedding_value = [float(x) for x in embedding_raw]
+                except (TypeError, ValueError):
+                    embedding_value = None
+
+            memories.append(
+                MemoryRecord(
+                    label=label_text,
+                    content=content_text,
+                    importance=importance_value,
+                    embedding=embedding_value,
+                )
+            )
+
+        return memories
+
+    async def _handle_memory_event(self, session_id: str, event_data: Any) -> None:
+        """Persist memory records emitted by the realtime API."""
+
+        if not self.persistence.enabled:
+            return
+
+        memories = self._parse_memory_event(event_data)
+        if not memories:
+            return
+
+        raw_payload = self._normalize_for_json(event_data)
+
+        async def _store_memory(record: MemoryRecord) -> None:
+            memory_id = await self.persistence.record_memory(record)
+            payload: dict[str, Any] = {
+                "memory": self._normalize_for_json(asdict(record)),
+            }
+            if memory_id:
+                payload["memory"]["id"] = memory_id
+            if raw_payload is not None:
+                payload["raw_event"] = raw_payload
+            self._record_session_event(
+                session_id,
+                "memory_recorded",
+                payload=payload,
+            )
+
+        for record in memories:
+            self._run_in_background(_store_memory(record))
+
     def _service(self) -> DIDTalksService:
         if self._did_service is None:
             try:
@@ -205,6 +458,12 @@ class RealtimeWebSocketManager:
         self.last_sentiment.setdefault(session_id, "neutral")
 
         await self.send_persona_mood_update(session_id)
+
+        self._record_session_event(
+            session_id,
+            "session_started",
+            payload={"persona": self.persona[session_id]},
+        )
 
         # Start event processing task
         task = asyncio.create_task(self._process_events(session_id), name=f"deckard-process-events-{session_id}")
@@ -235,6 +494,8 @@ class RealtimeWebSocketManager:
         self.response_counters.pop(session_id, None)
         self.active_response_texts.pop(session_id, None)
         self.active_response_ids.pop(session_id, None)
+
+        self._record_session_event(session_id, "session_disconnected")
 
     async def send_audio(self, session_id: str, audio_bytes: bytes):
         if session_id in self.active_sessions:
@@ -706,6 +967,9 @@ class RealtimeWebSocketManager:
 
             logger.info(f"[Session {session_id}] Processing raw model event: {event_type}")
 
+            if isinstance(event_type, str) and "memory" in event_type:
+                await self._handle_memory_event(session_id, event_data)
+
             # Handle wrapped OpenAI events in raw_server_event
             if event_type == "raw_server_event":
                 # Extract nested OpenAI event
@@ -819,6 +1083,9 @@ class RealtimeWebSocketManager:
         """Process OpenAI events extracted from raw_server_event."""
         try:
             logger.info(f"[Session {session_id}] OpenAI event details: {event_type}")
+
+            if "memory" in (event_type or ""):
+                await self._handle_memory_event(session_id, event_data)
 
             if event_type == "response.created":
                 response_id = event_data.get('response', {}).get('id', f'resp_{int(__import__("time").time())}')
@@ -1051,35 +1318,18 @@ class RealtimeWebSocketManager:
                         item_type = getattr(item, "type", None)
                         logger.info(f"[Session {session_id}] History item: type={item_type}, role={role}")
 
-                        if item_type == "message" and role == "assistant":
-                            # Gather any text parts from content
-                            text_parts: list[str] = []
-                            content = getattr(item, "content", [])
-                            logger.info(f"[Session {session_id}] Assistant message content has {len(content or [])} parts")
-
-                            for i, part in enumerate(content or []):
-                                try:
-                                    ptype = getattr(part, "type", None)
-
-                                    # Accept plain text or transcripts
-                                    if ptype in {"text", "output_text"}:
-                                        t = getattr(part, "text", None)
-                                        if isinstance(t, str) and t.strip():
-                                            text_parts.append(t)
-                                            logger.info(f"[Session {session_id}] Added text part: '{t[:100]}{'...' if len(t) > 100 else ''}'")
-                                    elif ptype == "audio":
-                                        tr = getattr(part, "transcript", None)
-                                        if isinstance(tr, str) and tr.strip():
-                                            text_parts.append(tr)
-                                            logger.info(f"[Session {session_id}] Added transcript part: '{tr[:100]}{'...' if len(tr) > 100 else ''}'")
-                                except Exception as part_error:
-                                    logger.warning(f"[Session {session_id}] Failed to process content part {i}: {part_error}")
-                                    continue
-
-                            full_text = " ".join(tp.strip() for tp in text_parts if tp.strip()).strip()
-                            logger.info(f"[Session {session_id}] Extracted full text ({len(full_text)} chars): '{full_text[:200]}{'...' if len(full_text) > 200 else ''}'")
-
+                        if item_type == "message":
+                            full_text = self._extract_text_from_item(item)
                             if full_text:
+                                logger.info(
+                                    f"[Session {session_id}] Extracted message text ({len(full_text)} chars): "
+                                    f"'{full_text[:200]}{'...' if len(full_text) > 200 else ''}'"
+                                )
+                                self._record_message(session_id, role or "system", full_text)
+                            else:
+                                logger.info(f"[Session {session_id}] No text extracted from message role={role}")
+
+                            if role == "assistant" and full_text:
                                 persona = self.persona.get(session_id, "joi")
                                 logger.info(f"[Session {session_id}] Current persona: {persona}")
 
@@ -1100,16 +1350,24 @@ class RealtimeWebSocketManager:
                                         )
                                     else:
                                         # Legacy immediate D-ID generation
-                                        logger.info(f"[Session {session_id}] Text generation available for persona {persona}, starting D-ID video generation")
+                                        logger.info(
+                                            f"[Session {session_id}] Text generation available for persona {persona}, starting D-ID video generation"
+                                        )
                                         asyncio.create_task(self._create_talk_from_text_and_notify(session_id, full_text))
                                 else:
-                                    logger.info(f"[Session {session_id}] No text generation available for persona {persona} (no source URL configured)")
+                                    logger.info(
+                                        f"[Session {session_id}] No text generation available for persona {persona} (no source URL configured)"
+                                    )
                             else:
-                                logger.info(f"[Session {session_id}] No text extracted from assistant message")
+                                logger.info(
+                                    f"[Session {session_id}] No text extracted from assistant message"
+                                )
                         elif item_type == "message" and role == "user":
                             await self._handle_user_message_sentiment(session_id, item)
                         else:
-                            logger.info(f"[Session {session_id}] Skipping non-assistant message: type={item_type}, role={role}")
+                            logger.info(
+                                f"[Session {session_id}] Skipping history item: type={item_type}, role={role}"
+                            )
                     except Exception as e:
                         # Never break the event loop on parsing mishaps
                         logger.exception(f"[Session {session_id}] Failed to inspect history_added for text: {e}")
@@ -1457,6 +1715,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     )
                 else:
                     manager.persona[session_id] = persona
+                    manager._record_session_event(
+                        session_id,
+                        "persona_set",
+                        payload={"persona": persona},
+                    )
                     await websocket.send_text(
                         json.dumps({"type": "client_info", "info": "persona_set", "persona": persona})
                     )
