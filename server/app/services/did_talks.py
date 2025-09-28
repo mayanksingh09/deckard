@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import base64
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import httpx
 
@@ -51,7 +50,7 @@ class DidTalkResult:
 
 
 class DIDTalksService:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, webhook: Optional[str] = None):
         raw_key = api_key or settings.did_api_key
         if not raw_key:
             raise RuntimeError("DID_API_KEY missing; set in environment")
@@ -61,6 +60,7 @@ class DIDTalksService:
         else:
             user, pwd = raw_key, ""
         self._auth = (user, pwd)
+        self._default_webhook = webhook or settings.did_webhook_url
 
     def _base_headers(self) -> dict[str, str]:
         # D-ID prefers Basic auth with API key as username and empty password.
@@ -145,6 +145,7 @@ class DIDTalksService:
         *,
         source_url: str,
         text: str,
+        voice_id: str = "en-US-JennyNeural",
         webhook: Optional[str] = None,
         timeout: float = 30.0,
     ) -> str:
@@ -153,12 +154,22 @@ class DIDTalksService:
             "script": {
                 "type": "text",
                 "input": text,
+                "provider": {
+                    "type": "microsoft",
+                    "voice_id": voice_id
+                }
             },
         }
-        if webhook:
+        webhook_url = webhook or self._default_webhook
+        if webhook_url:
             # According to example provided, webhook lives under script
             assert isinstance(payload["script"], dict)
-            payload["script"]["webhook"] = webhook
+            payload["script"]["webhook"] = webhook_url
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"Sending D-ID talk creation request: {payload}")
+
         async with httpx.AsyncClient(
             base_url=API_BASE,
             headers={**self._base_headers(), "Content-Type": "application/json"},
@@ -166,22 +177,47 @@ class DIDTalksService:
             auth=self._auth,
         ) as client:
             resp = await client.post("/talks", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            talk_id = data.get("id") or data.get("talk_id")
-            if not talk_id:
-                raise RuntimeError(f"Unexpected response from D-ID: {data}")
-            return str(talk_id)
+            logger.info(f"D-ID API response status: {resp.status_code}")
+
+            try:
+                resp.raise_for_status()
+                data = resp.json()
+                logger.info(f"D-ID API response data: {data}")
+
+                talk_id = data.get("id") or data.get("talk_id")
+                if not talk_id:
+                    logger.error(f"No talk_id in D-ID response: {data}")
+                    raise RuntimeError(f"Unexpected response from D-ID: {data}")
+
+                logger.info(f"Successfully created D-ID talk with ID: {talk_id}")
+                return str(talk_id)
+            except httpx.HTTPStatusError as e:
+                logger.error(f"D-ID API HTTP error: {e.response.status_code} - {e.response.text}")
+                raise
 
     async def generate_talk_from_text(
         self,
         *,
         source_url: str,
         text: str,
+        voice_id: str = "en-US-JennyNeural",
         webhook: Optional[str] = None,
     ) -> DidTalkResult:
-        talk_id = await self.create_talk_text(source_url=source_url, text=text, webhook=webhook)
-        return await self.wait_for_result(talk_id)
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"Starting D-ID talk generation: source_url={source_url[:50]}..., text_length={len(text)}, voice_id={voice_id}")
+        talk_id = await self.create_talk_text(
+            source_url=source_url,
+            text=text,
+            voice_id=voice_id,
+            webhook=webhook,
+        )
+        logger.info(f"D-ID talk created with ID: {talk_id}")
+
+        result = await self.wait_for_result(talk_id)
+        logger.info(f"D-ID talk {talk_id} completed with status: {result.status}")
+        return result
 
 
 def resolve_persona_image(persona: str) -> Path:
@@ -207,13 +243,25 @@ def resolve_persona_image(persona: str) -> Path:
 
 
 def resolve_persona_source_url(persona: str) -> Optional[str]:
+    import logging
+    import os
+    logger = logging.getLogger(__name__)
+
     key = persona.lower().strip()
     env_key = {
         "joi": "DID_SOURCE_URL_JOI",
         "officer_k": "DID_SOURCE_URL_OFFICER_K",
         "officer_j": "DID_SOURCE_URL_OFFICER_J",
     }.get(key)
+
     if not env_key:
+        logger.warning(f"Unknown persona for source URL resolution: {persona}")
         return None
-    import os
-    return os.getenv(env_key)
+
+    source_url = os.getenv(env_key)
+    if source_url:
+        logger.info(f"Found source URL for persona {persona} ({env_key}): {source_url[:50]}...")
+    else:
+        logger.warning(f"No source URL configured for persona {persona} (env var {env_key} is empty)")
+
+    return source_url

@@ -484,9 +484,15 @@ export default function Home() {
       switch (type) {
         case 'talk_video': {
           const url = typeof event.url === 'string' ? event.url : '';
+          const coordinated = typeof event.coordinated === 'boolean' ? event.coordinated : false;
+
           if (url) {
             setVideoUrl(url);
-            logEvent('video', 'D-ID talk ready', url);
+            if (coordinated) {
+              logEvent('video', 'Coordinated video ready', `Audio and video synchronized: ${url}`);
+            } else {
+              logEvent('video', 'D-ID talk ready', url);
+            }
           } else {
             logEvent('video', 'D-ID talk status', String(event.status ?? 'unknown'));
           }
@@ -544,7 +550,15 @@ export default function Home() {
         }
         case 'client_info': {
           const info = typeof event.info === 'string' ? event.info : 'client info';
-          logEvent('client', `Client info`, info);
+
+          // Handle special response processing notifications
+          if (info === 'response_processing') {
+            const message = typeof event.message === 'string' ? event.message : 'Generating response...';
+            logEvent('response', 'Processing Response', message);
+            // Could add UI indication here that response is being generated
+          } else {
+            logEvent('client', `Client info`, info);
+          }
           break;
         }
         case 'guardrail_tripped': {
@@ -934,7 +948,9 @@ export default function Home() {
                 )}
               </div>
               <div className="text-[0.7rem] text-stone-400">
-                {videoUrl ? 'Video ready from D-ID. You can switch persona anytime.' : 'Awaiting audio to generate a talk. Persona can be changed.'}
+                {videoUrl
+                  ? 'Video ready from D-ID. You can switch persona anytime.'
+                  : 'Awaiting assistant response to generate a talk. Persona can be changed.'}
               </div>
             </div>
             <div className="flex flex-col gap-4 rounded-3xl border border-stone-800/80 bg-stone-950/80 p-6 shadow-[0_18px_60px_rgba(8,8,8,0.45)]">

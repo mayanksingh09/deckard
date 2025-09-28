@@ -23,6 +23,8 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     # D-ID Talks API key
     did_api_key: Optional[str] = os.getenv("DID_API_KEY")
+    # Optional webhook endpoint invoked by D-ID once a talk is ready
+    did_webhook_url: Optional[str] = os.getenv("DID_WEBHOOK_URL")
 
 
 @lru_cache(maxsize=1)
