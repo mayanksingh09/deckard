@@ -13,7 +13,7 @@ import base64
 import json
 import logging
 import struct
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from typing_extensions import assert_never
 
+from agents import Runner
 from agents.realtime import RealtimeRunner, RealtimeSession, RealtimeSessionEvent
 from agents.realtime.config import RealtimeUserInputMessage
 from agents.realtime.model_inputs import RealtimeModelSendRawMessage
@@ -60,7 +61,11 @@ else:
         from .ai_agents.realtime_conversation import get_starting_agent
     except ImportError:
         from ai_agents.realtime_conversation import get_starting_agent
-    
+
+try:
+    from .ai_agents.sentiment_classifying import sentiment_classifying_agent
+except ImportError:
+    from ai_agents.sentiment_classifying import sentiment_classifying_agent
 
 logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
@@ -70,6 +75,26 @@ from app.services.did_talks import (
     resolve_persona_image,
 )
 from app.services.did_talks import resolve_persona_source_url  # unused in realtime-only flow
+
+
+VALID_SENTIMENTS = {"positive", "negative", "neutral"}
+SENTIMENT_VIDEO_MAP: dict[str, dict[str, str]] = {
+    "joi": {
+        "positive": "/joi-happy.mp4",
+        "negative": "/joi-sad.mp4",
+        "neutral": "/joi-thinking.mp4",
+    },
+    "officer_k": {
+        "positive": "/officer_k-happy.mp4",
+        "negative": "/officer_k-sad.mp4",
+        "neutral": "/officer_k-thinking.mp4",
+    },
+    "officer_j": {
+        "positive": "/officer_j-happy.mp4",
+        "negative": "/officer_j-sad.mp4",
+        "neutral": "/officer_j-thinking.mp4",
+    },
+}
 
 
 class ResponseState(Enum):
@@ -136,6 +161,9 @@ class RealtimeWebSocketManager:
         self.response_audio_buffers: dict[str, bytearray] = {}
         # Selected persona per session (joi | officer_k | officer_j)
         self.persona: dict[str, str] = {}
+        self.last_sentiment: dict[str, str] = {}
+        self.persona_videos: dict[str, str] = {}
+        self._event_tasks: dict[str, asyncio.Task] = {}
         # Service instance (lazy)
         self._did_service: DIDTalksService | None = None
         self._default_webhook: Optional[str] = settings.did_webhook_url
@@ -175,9 +203,13 @@ class RealtimeWebSocketManager:
         # Initialize buffer and default persona
         self.response_audio_buffers[session_id] = bytearray()
         self.persona[session_id] = self.persona.get(session_id) or "joi"
+        self.last_sentiment.setdefault(session_id, "neutral")
+
+        await self.send_persona_mood_update(session_id)
 
         # Start event processing task
-        asyncio.create_task(self._process_events(session_id))
+        task = asyncio.create_task(self._process_events(session_id), name=f"deckard-process-events-{session_id}")
+        self._event_tasks[session_id] = task
 
     async def disconnect(self, session_id: str):
         if session_id in self.session_contexts:
@@ -189,6 +221,14 @@ class RealtimeWebSocketManager:
             del self.websockets[session_id]
         self.response_audio_buffers.pop(session_id, None)
         self.persona.pop(session_id, None)
+        self.last_sentiment.pop(session_id, None)
+        self.persona_videos.pop(session_id, None)
+
+        task = self._event_tasks.pop(session_id, None)
+        if task:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
         # Clean up new response tracking
         self.response_buffers.pop(session_id, None)
@@ -240,6 +280,112 @@ class RealtimeWebSocketManager:
     def _should_use_audio_for_did(self, persona: str) -> bool:
         """Check if we should use audio for D-ID generation (when no source URL is configured)."""
         return not self._has_text_generation_available(persona)
+
+    def _resolve_persona_video(self, persona: str, sentiment: str) -> str:
+        persona_key = (persona or "joi").lower()
+        persona_map = SENTIMENT_VIDEO_MAP.get(persona_key)
+        if not persona_map:
+            fallback = f"/{persona_key}-thinking.mp4"
+            return fallback
+
+        sentiment_key = (sentiment or "neutral").lower()
+        if sentiment_key not in VALID_SENTIMENTS:
+            sentiment_key = "neutral"
+
+        return persona_map.get(sentiment_key) or persona_map.get("neutral") or f"/{persona_key}-thinking.mp4"
+
+    async def _classify_sentiment(self, text: str) -> str:
+        normalized = (text or "").strip()
+        if not normalized:
+            return "neutral"
+
+        try:
+            result = await Runner.run(sentiment_classifying_agent, input=normalized)
+        except Exception as exc:
+            logger.exception("Failed to classify sentiment: %s", exc)
+            return "neutral"
+
+        sentiment = (getattr(result, "final_output", None) or "").strip().lower()
+        if sentiment in VALID_SENTIMENTS:
+            return sentiment
+
+        logger.debug("Unexpected sentiment label '%s', defaulting to neutral", sentiment)
+        return "neutral"
+
+    def _extract_text_from_message_item(self, item: Any) -> str:
+        data = self._coerce_to_dict(item)
+        if not data or data.get("type") != "message":
+            return ""
+
+        text_parts: list[str] = []
+        for part in data.get("content", []) or []:
+            part_dict = self._coerce_to_dict(part)
+            if not part_dict:
+                continue
+
+            part_type = part_dict.get("type")
+            if part_type in {"text", "input_text", "output_text"}:
+                candidate = part_dict.get("text")
+            elif part_type in {"audio", "input_audio"}:
+                candidate = part_dict.get("transcript")
+            else:
+                candidate = None
+
+            if isinstance(candidate, str):
+                cleaned = candidate.strip()
+                if cleaned:
+                    text_parts.append(cleaned)
+
+        return " ".join(text_parts).strip()
+
+    async def send_persona_mood_update(
+        self,
+        session_id: str,
+        *,
+        sentiment: Optional[str] = None,
+        notify: bool = True,
+    ) -> None:
+        persona = self.persona.get(session_id, "joi")
+        active_sentiment = sentiment or self.last_sentiment.get(session_id, "neutral")
+
+        # Persist state for future updates
+        self.last_sentiment[session_id] = active_sentiment
+        video_path = self._resolve_persona_video(persona, active_sentiment)
+        self.persona_videos[session_id] = video_path
+
+        if not notify:
+            return
+
+        websocket = self.websockets.get(session_id)
+        if not websocket:
+            return
+
+        payload = {
+            "type": "client_info",
+            "info": "persona_mood_update",
+            "persona": persona,
+            "sentiment": active_sentiment,
+            "video": video_path,
+        }
+
+        try:
+            await websocket.send_text(json.dumps(payload))
+            logger.info(
+                f"[Session {session_id}] Sent persona mood update: persona={persona}, sentiment={active_sentiment}, video={video_path}"
+            )
+        except Exception as exc:
+            logger.exception("Failed to send persona mood update: %s", exc)
+
+    async def _handle_user_message_sentiment(self, session_id: str, item: Any) -> None:
+        text = self._extract_text_from_message_item(item)
+        if not text:
+            return
+
+        sentiment = await self._classify_sentiment(text)
+        logger.info(
+            f"[Session {session_id}] Classified user sentiment as '{sentiment}'"
+        )
+        await self.send_persona_mood_update(session_id, sentiment=sentiment)
 
     def _get_next_response_id(self, session_id: str) -> str:
         """Generate a unique response ID for a session."""
@@ -300,11 +446,18 @@ class RealtimeWebSocketManager:
             return
 
         # For now, send a simple notification - later we'll add actual filler audio
+        thinking_video = self.persona_videos.get(session_id)
+        if not thinking_video:
+            persona = self.persona.get(session_id, "joi")
+            thinking_video = self._resolve_persona_video(persona, self.last_sentiment.get(session_id, "neutral"))
+            self.persona_videos[session_id] = thinking_video
+
         await websocket.send_text(json.dumps({
             "type": "client_info",
             "info": "response_processing",
             "message": "Generating response with video...",
-            "filler_type": filler_type
+            "filler_type": filler_type,
+            "video": thinking_video,
         }))
         logger.info(f"[Session {session_id}] Sent filler notification: {filler_type}")
 
@@ -400,6 +553,13 @@ class RealtimeWebSocketManager:
         logger.info(
             f"[Session {session_id}] Assistant response text extracted: '{assistant_text[:200]}{'...' if len(assistant_text) > 200 else ''}'"
         )
+
+        # Classify sentiment of assistant response to update persona mood
+        sentiment = await self._classify_sentiment(assistant_text)
+        logger.info(
+            f"[Session {session_id}] Classified assistant sentiment as '{sentiment}'"
+        )
+        await self.send_persona_mood_update(session_id, sentiment=sentiment)
 
         if self.enable_response_buffering:
             persona = self.persona.get(session_id, "joi")
@@ -844,6 +1004,13 @@ class RealtimeWebSocketManager:
         persona = self.persona.get(session_id, "joi")
         logger.info(f"[Session {session_id}] Triggering video generation for persona {persona}")
 
+        # Also classify sentiment when triggering video to ensure mood is updated
+        sentiment = await self._classify_sentiment(text)
+        logger.info(
+            f"[Session {session_id}] Classified text sentiment as '{sentiment}' for video generation"
+        )
+        await self.send_persona_mood_update(session_id, sentiment=sentiment)
+
         if self._has_text_generation_available(persona):
             logger.info(f"[Session {session_id}] Starting D-ID video generation with text: '{text[:100]}{'...' if len(text) > 100 else ''}'")
             asyncio.create_task(self._create_talk_from_text_and_notify(session_id, text))
@@ -851,6 +1018,7 @@ class RealtimeWebSocketManager:
             logger.info(f"[Session {session_id}] No text generation available for persona {persona} (no source URL configured)")
 
     async def _process_events(self, session_id: str):
+        task = asyncio.current_task()
         try:
             session = self.active_sessions[session_id]
             websocket = self.websockets[session_id]
@@ -917,6 +1085,13 @@ class RealtimeWebSocketManager:
                                 persona = self.persona.get(session_id, "joi")
                                 logger.info(f"[Session {session_id}] Current persona: {persona}")
 
+                                # Classify sentiment of assistant message to update mood
+                                sentiment = await self._classify_sentiment(full_text)
+                                logger.info(
+                                    f"[Session {session_id}] Classified assistant message sentiment as '{sentiment}'"
+                                )
+                                await self.send_persona_mood_update(session_id, sentiment=sentiment)
+
                                 if self._has_text_generation_available(persona):
                                     if self.enable_response_buffering:
                                         # Use new buffering system for coordinated audio/video
@@ -933,6 +1108,8 @@ class RealtimeWebSocketManager:
                                     logger.info(f"[Session {session_id}] No text generation available for persona {persona} (no source URL configured)")
                             else:
                                 logger.info(f"[Session {session_id}] No text extracted from assistant message")
+                        elif item_type == "message" and role == "user":
+                            await self._handle_user_message_sentiment(session_id, item)
                         else:
                             logger.info(f"[Session {session_id}] Skipping non-assistant message: type={item_type}, role={role}")
                     except Exception as e:
@@ -944,8 +1121,14 @@ class RealtimeWebSocketManager:
 
                 event_data = await self._serialize_event(event)
                 await websocket.send_text(json.dumps(event_data))
+        except asyncio.CancelledError:
+            logger.info(f"[Session {session_id}] Event processor cancelled")
+            raise
         except Exception as e:
             logger.error(f"Error processing events for session {session_id}: {e}")
+        finally:
+            if self._event_tasks.get(session_id) is task:
+                self._event_tasks.pop(session_id, None)
 
     async def _serialize_event(self, event: RealtimeSessionEvent) -> dict[str, Any]:
         base_event: dict[str, Any] = {
@@ -1279,6 +1462,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     await websocket.send_text(
                         json.dumps({"type": "client_info", "info": "persona_set", "persona": persona})
                     )
+                    await manager.send_persona_mood_update(session_id)
 
     except WebSocketDisconnect:
         await manager.disconnect(session_id)

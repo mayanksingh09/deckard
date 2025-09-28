@@ -27,6 +27,12 @@ const DEFAULT_WS_BASE = process.env.NEXT_PUBLIC_REALTIME_WS_URL ?? 'ws://localho
 const CHUNK_SIZE = 60_000;
 const MAX_EVENTS = 150;
 const MAX_MESSAGES = 200;
+type PersonaKey = 'joi' | 'officer_k' | 'officer_j';
+const PERSONA_DEFAULT_THINKING_VIDEO: Record<PersonaKey, string> = {
+  joi: '/joi-thinking.mp4',
+  officer_k: '/officer_k-thinking.mp4',
+  officer_j: '/officer_j-thinking.mp4',
+};
 
 const randomId = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 
@@ -134,7 +140,8 @@ function parseHistoryMessageItem(item: unknown): ConversationMessage | null {
 
 export default function Home() {
   const [sessionId, setSessionId] = useState<string>('');
-  const [persona, setPersona] = useState<'joi' | 'officer_k' | 'officer_j'>('joi');
+  const [persona, setPersona] = useState<PersonaKey>('joi');
+  const [thinkingVideo, setThinkingVideo] = useState<string>(PERSONA_DEFAULT_THINKING_VIDEO['joi']);
   const [videoUrl, setVideoUrl] = useState<string>('');
   useEffect(() => {
     // Generate a stable client-only session id to avoid SSR/client mismatch
@@ -175,6 +182,15 @@ export default function Home() {
   useEffect(() => {
     isMutedRef.current = isMuted;
   }, [isMuted]);
+
+  useEffect(() => {
+    setThinkingVideo((previous) => {
+      if (typeof previous === 'string' && previous.startsWith(`/${persona}`)) {
+        return previous;
+      }
+      return PERSONA_DEFAULT_THINKING_VIDEO[persona];
+    });
+  }, [persona]);
 
   const logEvent = useCallback(
     (type: string, title: string, description?: string, severity: 'info' | 'warn' | 'error' = 'info') => {
@@ -430,8 +446,32 @@ export default function Home() {
           // Handle special response processing notifications
           if (info === 'response_processing') {
             const message = typeof event.message === 'string' ? event.message : 'Generating response...';
+            const video = typeof event.video === 'string' ? event.video : null;
+            if (video) {
+              setThinkingVideo(video);
+            }
             setIsThinking(true);
             logEvent('response', 'Processing Response', message);
+          } else if (info === 'persona_mood_update') {
+            const personaRaw = typeof event.persona === 'string' ? event.persona : null;
+            const video = typeof event.video === 'string' ? event.video : null;
+            const sentiment = typeof event.sentiment === 'string' ? event.sentiment : undefined;
+
+            if (personaRaw === 'joi' || personaRaw === 'officer_k' || personaRaw === 'officer_j') {
+              const personaFromEvent: PersonaKey = personaRaw;
+              setPersona(personaFromEvent);
+              setThinkingVideo(video ?? PERSONA_DEFAULT_THINKING_VIDEO[personaFromEvent]);
+              logEvent('persona', 'Persona mood updated', `${personaFromEvent} · ${sentiment ?? 'unknown'}`);
+            } else if (video) {
+              setThinkingVideo(video);
+            }
+          } else if (info === 'persona_set') {
+            const personaRaw = typeof event.persona === 'string' ? event.persona : null;
+            if (personaRaw === 'joi' || personaRaw === 'officer_k' || personaRaw === 'officer_j') {
+              const personaFromEvent: PersonaKey = personaRaw;
+              setPersona(personaFromEvent);
+              setThinkingVideo(PERSONA_DEFAULT_THINKING_VIDEO[personaFromEvent]);
+            }
           } else if (info === 'did_talk_start') {
             setIsThinking(true);
             logEvent('video', 'Video generation started');
@@ -617,17 +657,10 @@ export default function Home() {
     }
   }, [persona]);
 
-  const personaThinkingVideo = useMemo(() => {
-    switch (persona) {
-      case 'officer_k':
-        return '/officer_k-thinking.mp4';
-      case 'officer_j':
-        return '/officer_j-thinking.mp4';
-      case 'joi':
-      default:
-        return '/joi-thinking.mp4';
-    }
-  }, [persona]);
+  const personaThinkingVideo = useMemo(
+    () => thinkingVideo || PERSONA_DEFAULT_THINKING_VIDEO[persona],
+    [persona, thinkingVideo]
+  );
 
   useEffect(() => {
     return () => {
@@ -697,7 +730,7 @@ export default function Home() {
               {isThinking && (
                 <div className="absolute inset-0 z-10 overflow-hidden">
                   <video
-                    key={persona}
+                    key={personaThinkingVideo}
                     src={personaThinkingVideo}
                     autoPlay
                     loop
