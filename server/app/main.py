@@ -1,4 +1,13 @@
 """FastAPI application entrypoint for the Deckard orchestrator."""
+from pathlib import Path
+import sys
+
+# Ensure the project root (parent of this file's directory) is on sys.path
+_THIS_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _THIS_DIR.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+    
 from ast import Import
 import asyncio
 import base64
@@ -50,7 +59,11 @@ else:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from app.services.did_talks import DIDTalksService, resolve_persona_image
+from app.services.did_talks import (
+    DIDTalksService,
+    resolve_persona_image,
+)
+from app.services.did_talks import resolve_persona_source_url  # unused in realtime-only flow
 
 class RealtimeWebSocketManager:
     def __init__(self):
@@ -59,7 +72,7 @@ class RealtimeWebSocketManager:
         self.websockets: dict[str, WebSocket] = {}
         # Accumulate PCM 16-bit, 24kHz mono output per response for each session
         self.response_audio_buffers: dict[str, bytearray] = {}
-        # Selected persona per session (mayank | ryan | agastya)
+        # Selected persona per session (joi | officer_k | officer_j)
         self.persona: dict[str, str] = {}
         # Service instance (lazy)
         self._did_service: DIDTalksService | None = None
@@ -73,6 +86,7 @@ class RealtimeWebSocketManager:
                 raise
         return self._did_service
 
+
     async def connect(self, websocket: WebSocket, session_id: str):
         await websocket.accept()
         self.websockets[session_id] = websocket
@@ -85,7 +99,7 @@ class RealtimeWebSocketManager:
         self.session_contexts[session_id] = session_context
         # Initialize buffer and default persona
         self.response_audio_buffers[session_id] = bytearray()
-        self.persona[session_id] = self.persona.get(session_id) or "mayank"
+        self.persona[session_id] = self.persona.get(session_id) or "joi"
 
         # Start event processing task
         asyncio.create_task(self._process_events(session_id))
@@ -139,14 +153,11 @@ class RealtimeWebSocketManager:
             websocket = self.websockets[session_id]
 
             async for event in session:
-                # Intercept audio stream for D-ID
+                # Intercept assistant audio stream and build a D-ID talk when the turn ends
                 if event.type == "audio":
-                    # Append raw PCM bytes for this response turn
                     self.response_audio_buffers.setdefault(session_id, bytearray()).extend(event.audio.data)
                 elif event.type == "audio_end":
-                    # Spawn background task to create a talk from the accumulated audio
                     pcm = bytes(self.response_audio_buffers.get(session_id, b""))
-                    # Reset buffer for next turn
                     self.response_audio_buffers[session_id] = bytearray()
                     if pcm:
                         asyncio.create_task(self._create_talk_and_notify(session_id, pcm))
@@ -206,16 +217,27 @@ class RealtimeWebSocketManager:
 
     async def _create_talk_and_notify(self, session_id: str, pcm: bytes) -> None:
         websocket = self.websockets.get(session_id)
-        persona = self.persona.get(session_id, "mayank")
+        persona = self.persona.get(session_id, "joi")
         if websocket is None:
             return
         try:
             service = self._service()
             image_path = resolve_persona_image(persona)
             # Realtime outputs 24kHz mono PCM 16-bit
+            await websocket.send_text(json.dumps({
+                "type": "client_info",
+                "info": "did_talk_start",
+                "persona": persona,
+            }))
             result = await service.generate_talk_from_pcm(
                 pcm_bytes=pcm, sample_rate=24_000, persona_image_path=image_path
             )
+            await websocket.send_text(json.dumps({
+                "type": "client_info",
+                "info": "did_talk_status",
+                "persona": persona,
+                "status": result.status,
+            }))
             payload: dict[str, Any] = {
                 "type": "talk_video",
                 "persona": persona,
@@ -234,6 +256,8 @@ class RealtimeWebSocketManager:
                 await websocket.send_text(json.dumps(err_payload))
             except Exception:
                 logger.exception("Failed sending talk_error to client")
+
+    # STT path intentionally removed in realtime-only flow
 
 
 manager = RealtimeWebSocketManager()
@@ -382,8 +406,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             elif message["type"] == "interrupt":
                 await manager.interrupt(session_id)
             elif message["type"] == "set_persona":
-                persona = str(message.get("persona") or "mayank").lower()
-                if persona not in {"mayank", "ryan", "agastya"}:
+                persona = str(message.get("persona") or "joi").lower()
+                if persona not in {"joi", "officer_k", "officer_j"}:
                     await websocket.send_text(
                         json.dumps({"type": "error", "error": f"Unknown persona: {persona}"})
                     )

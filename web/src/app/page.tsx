@@ -134,7 +134,7 @@ function parseHistoryMessageItem(item: unknown): ConversationMessage | null {
 
 export default function Home() {
   const [sessionId, setSessionId] = useState<string>('');
-  const [persona, setPersona] = useState<'mayank' | 'ryan' | 'agastya'>('mayank');
+  const [persona, setPersona] = useState<'joi' | 'officer_k' | 'officer_j'>('joi');
   const [videoUrl, setVideoUrl] = useState<string>('');
   useEffect(() => {
     // Generate a stable client-only session id to avoid SSR/client mismatch
@@ -174,6 +174,7 @@ export default function Home() {
   const [events, setEvents] = useState<EventLogEntry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [promptText, setPromptText] = useState('Please describe this image.');
+  const [userInteracted, setUserInteracted] = useState(false);
 
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -716,13 +717,13 @@ export default function Home() {
 
   const personaImage = useMemo(() => {
     switch (persona) {
-      case 'ryan':
-        return '/ryan_g.png';
-      case 'agastya':
-        return '/agastya.jpeg';
-      case 'mayank':
+      case 'officer_k':
+        return '/officer_k.png';
+      case 'officer_j':
+        return '/officer_j.png';
+      case 'joi':
       default:
-        return '/mayank.jpeg';
+        return '/joi.png';
     }
   }, [persona]);
 
@@ -789,7 +790,7 @@ export default function Home() {
                     ? 'bg-rose-500/20 text-rose-200 hover:bg-rose-500/30'
                     : 'bg-emerald-400 text-stone-950 hover:bg-emerald-300'
                 }`}
-                onClick={isConnected ? closeConnection : openConnection}
+                onClick={() => { setUserInteracted(true); (isConnected ? closeConnection() : openConnection()); }}
                 disabled={isConnecting}
               >
                 {isConnected ? 'Disconnect' : isConnecting ? 'Connecting…' : 'Connect'}
@@ -894,7 +895,7 @@ export default function Home() {
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-[0.35em] text-stone-500">Talking Video</span>
                 <div className="flex items-center gap-2">
-                  {(['mayank','ryan','agastya'] as const).map((key) => (
+                  {(['joi','officer_k','officer_j'] as const).map((key) => (
                     <button
                       key={key}
                       onClick={() => {
@@ -906,7 +907,7 @@ export default function Home() {
                         persona === key ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-200' : 'border-stone-700 bg-stone-900 text-stone-300 hover:text-stone-100'
                       }`}
                     >
-                      {key}
+                      {key.toUpperCase()}
                     </button>
                   ))}
                 </div>
@@ -923,7 +924,7 @@ export default function Home() {
                     controls
                     autoPlay
                     loop
-                    muted
+                    muted={!userInteracted}
                     playsInline
                     className="h-full w-full object-cover"
                     poster={personaImage}

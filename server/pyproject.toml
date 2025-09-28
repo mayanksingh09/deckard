@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "openai-agents[voice]>=0.3.2",
+    "openai>=1.44.0",
     "ruff>=0.13.2",
     "python-dotenv>=1.0.1",
     "dotenv>=0.9.9",

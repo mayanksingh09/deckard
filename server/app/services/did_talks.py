@@ -8,7 +8,14 @@ from typing import Optional, Tuple
 
 import httpx
 
-from app.config import settings
+# Support both package and script import contexts for settings
+try:
+    from ..config import settings  # when imported as part of the app package
+except Exception:  # pragma: no cover - fallback for script-style execution
+    try:
+        from app.config import settings  # when "app" is a top-level package
+    except Exception:  # final fallback when running from server/app as CWD
+        from config import settings
 
 
 API_BASE = "https://api.d-id.com"
@@ -45,15 +52,20 @@ class DidTalkResult:
 
 class DIDTalksService:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or settings.did_api_key
-        if not self.api_key:
+        raw_key = api_key or settings.did_api_key
+        if not raw_key:
             raise RuntimeError("DID_API_KEY missing; set in environment")
+        # Support USERNAME:PASSWORD or single token (password may be empty)
+        if ":" in raw_key:
+            user, pwd = raw_key.split(":", 1)
+        else:
+            user, pwd = raw_key, ""
+        self._auth = (user, pwd)
 
-    def _auth_headers(self) -> dict[str, str]:
-        # D-ID uses Basic auth with API key in place of username/password
-        return {
-            "Authorization": f"Basic {self.api_key}",
-        }
+    def _base_headers(self) -> dict[str, str]:
+        # D-ID prefers Basic auth with API key as username and empty password.
+        # We'll pass auth=(api_key, "") to httpx and keep basic JSON defaults here.
+        return {"Accept": "application/json"}
 
     async def create_talk_multipart(
         self,
@@ -68,7 +80,12 @@ class DIDTalksService:
             "source_image": (image_filename, image_bytes, "image/jpeg" if image_filename.endswith(".jpeg") or image_filename.endswith(".jpg") else "image/png"),
             "audio": ("audio.wav", audio_wav_bytes, "audio/wav"),
         }
-        async with httpx.AsyncClient(base_url=API_BASE, headers=self._auth_headers(), timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            base_url=API_BASE,
+            headers=self._base_headers(),
+            timeout=timeout,
+            auth=self._auth,
+        ) as client:
             resp = await client.post("/talks", files=files)
             resp.raise_for_status()
             data = resp.json()
@@ -78,7 +95,12 @@ class DIDTalksService:
             return str(talk_id)
 
     async def get_talk(self, talk_id: str, timeout: float = 30.0) -> DidTalkResult:
-        async with httpx.AsyncClient(base_url=API_BASE, headers=self._auth_headers(), timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            base_url=API_BASE,
+            headers=self._base_headers(),
+            timeout=timeout,
+            auth=self._auth,
+        ) as client:
             resp = await client.get(f"/talks/{talk_id}")
             resp.raise_for_status()
             data = resp.json()
@@ -87,7 +109,7 @@ class DIDTalksService:
             error = data.get("error") or None
             return DidTalkResult(talk_id=talk_id, status=status, result_url=result_url, error=error)
 
-    async def wait_for_result(self, talk_id: str, *, poll_interval: float = 1.0, max_wait: float = 60.0) -> DidTalkResult:
+    async def wait_for_result(self, talk_id: str, *, poll_interval: float = 1.0, max_wait: float = 120.0) -> DidTalkResult:
         deadline = asyncio.get_event_loop().time() + max_wait
         last = None
         while asyncio.get_event_loop().time() < deadline:
@@ -118,6 +140,49 @@ class DIDTalksService:
         )
         return await self.wait_for_result(talk_id)
 
+    async def create_talk_text(
+        self,
+        *,
+        source_url: str,
+        text: str,
+        webhook: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> str:
+        payload: dict[str, object] = {
+            "source_url": source_url,
+            "script": {
+                "type": "text",
+                "input": text,
+            },
+        }
+        if webhook:
+            # According to example provided, webhook lives under script
+            assert isinstance(payload["script"], dict)
+            payload["script"]["webhook"] = webhook
+        async with httpx.AsyncClient(
+            base_url=API_BASE,
+            headers={**self._base_headers(), "Content-Type": "application/json"},
+            timeout=timeout,
+            auth=self._auth,
+        ) as client:
+            resp = await client.post("/talks", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            talk_id = data.get("id") or data.get("talk_id")
+            if not talk_id:
+                raise RuntimeError(f"Unexpected response from D-ID: {data}")
+            return str(talk_id)
+
+    async def generate_talk_from_text(
+        self,
+        *,
+        source_url: str,
+        text: str,
+        webhook: Optional[str] = None,
+    ) -> DidTalkResult:
+        talk_id = await self.create_talk_text(source_url=source_url, text=text, webhook=webhook)
+        return await self.wait_for_result(talk_id)
+
 
 def resolve_persona_image(persona: str) -> Path:
     """Map a short persona key to the repository's web/public image path."""
@@ -126,16 +191,29 @@ def resolve_persona_image(persona: str) -> Path:
     repo_root = here.parents[3]  # .../deckard
     public = repo_root / "web" / "public"
     mapping = {
-        "mayank": public / "mayank.jpeg",
-        "ryan": public / "ryan_g.png",
-        "agastya": public / "agastya.jpeg",
+        # New keys mapped to existing public assets
+        "joi": public / "joi.png",
+        "officer_k": public / "officer_k.png",
+        "officer_j": public / "officer_j.png"
     }
     key = persona.lower().strip()
     if key not in mapping:
-        # default to mayank
-        key = "mayank"
+        # default to joi
+        key = "joi"
     path = mapping[key]
     if not path.exists():
         raise FileNotFoundError(f"Persona image not found: {path}")
     return path
 
+
+def resolve_persona_source_url(persona: str) -> Optional[str]:
+    key = persona.lower().strip()
+    env_key = {
+        "joi": "DID_SOURCE_URL_JOI",
+        "officer_k": "DID_SOURCE_URL_OFFICER_K",
+        "officer_j": "DID_SOURCE_URL_OFFICER_J",
+    }.get(key)
+    if not env_key:
+        return None
+    import os
+    return os.getenv(env_key)
