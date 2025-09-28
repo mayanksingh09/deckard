@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .web_search_agent import search_agent
+from .sentiment_classifying import sentiment_classifying_agent
 from app.services.computer_use import post_to_x
 
 
@@ -22,6 +23,15 @@ async def execute_web_search(query: str) -> str:
     if run_result.final_output:
         return str(run_result.final_output)
     return "I could not find any relevant results."
+
+
+@function_tool(name_override="sentiment_classifying")
+async def execute_sentiment_classifying(message: str) -> str:
+    """Classify the sentiment of the user's message."""
+    run_result = await Runner.run(sentiment_classifying_agent, input=message)
+    if run_result.final_output:
+        return str(run_result.final_output)
+    return "I could not classify the sentiment of the message."
 
 
 @function_tool(name_override="post_to_x")
@@ -52,7 +62,7 @@ assistant_agent = RealtimeAgent(
         f"{RECOMMENDED_PROMPT_PREFIX} "
         "You are a helpful voice assistant agent. You provide to the point and succinct answers. You can use your tools to delegate questions to other appropriate agents."
     ),
-    tools=[post_to_x_tool],
+    tools=[post_to_x_tool, execute_sentiment_classifying],
     handoffs=[web_search_rt_agent]
 )
 

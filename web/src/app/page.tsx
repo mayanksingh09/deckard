@@ -617,6 +617,18 @@ export default function Home() {
     }
   }, [persona]);
 
+  const personaThinkingVideo = useMemo(() => {
+    switch (persona) {
+      case 'officer_k':
+        return '/officer_k-thinking.mp4';
+      case 'officer_j':
+        return '/officer_j-thinking.mp4';
+      case 'joi':
+      default:
+        return '/joi-thinking.mp4';
+    }
+  }, [persona]);
+
   useEffect(() => {
     return () => {
       const ws = wsRef.current;
@@ -683,11 +695,16 @@ export default function Home() {
                 <Image src={personaImage} alt="Persona" fill className="object-cover" unoptimized />
               )}
               {isThinking && (
-                <div className="absolute inset-0 flex items-center justify-center bg-slate-950/70 backdrop-blur">
-                  <div className="flex flex-col items-center gap-4">
-                    <span className="inline-flex h-12 w-12 animate-spin rounded-full border-2 border-emerald-300/30 border-t-emerald-200" />
-                    <span className="text-[0.65rem] font-semibold uppercase tracking-[0.4em] text-emerald-100">Synthesizing</span>
-                  </div>
+                <div className="absolute inset-0 z-10 overflow-hidden">
+                  <video
+                    key={persona}
+                    src={personaThinkingVideo}
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    className="h-full w-full object-cover"
+                  />
                 </div>
               )}
             </div>
