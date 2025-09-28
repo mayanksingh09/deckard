@@ -9,8 +9,6 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from typing_extensions import assert_never
 
 from agents.realtime import RealtimeRunner, RealtimeSession, RealtimeSessionEvent
@@ -323,12 +321,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         await manager.disconnect(session_id)
 
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
-
-
 @app.get("/")
-async def read_index():
-    return FileResponse("static/index.html")
+async def root() -> dict[str, str]:
+    """Lightweight health endpoint for service discovery."""
+    return {"service": "deckard-realtime", "status": "ok"}
 
 
 if __name__ == "__main__":
