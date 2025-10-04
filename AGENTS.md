@@ -17,3 +17,9 @@ Write commits in the imperative mood with a concise subject ("Add onboarding upl
 
 ## Supabase & Environment Tips
 Copy `.env.example` to `.env.local`, fill the Supabase keys, and export `SUPABASE_DB_URL` when running CLI commands. Keep secrets out of commits—use `.env.local` and the Supabase dashboard instead. Database updates should land in a new migration file under `web/supabase/migrations/` to retain reproducibility for the avatar workflows.
+
+## PR Guidelines
+Always add descriptive title and description to the PR.
+
+## CHANGELOG Guidelines
+Always add a changelog entry to the CHANGELOG.md file.
