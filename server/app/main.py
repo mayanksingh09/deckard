@@ -164,8 +164,7 @@ class RealtimeWebSocketManager:
         self.persona_videos: dict[str, str] = {}
         self._event_tasks: dict[str, asyncio.Task] = {}
         # Service instance (lazy)
-        self._did_service: DIDTalksService | None = None
-        self._default_webhook: Optional[str] = settings.did_webhook_url
+        self._lip_sync_service: DIDTalksService | None = None
 
         # New response buffering system
         self.response_buffers: dict[str, ResponseBuffer] = {}  # session_id -> current response buffer
@@ -180,13 +179,13 @@ class RealtimeWebSocketManager:
         self.enable_response_buffering: bool = False  # Feature flag for buffering responses (disabled while fixing)
 
     def _service(self) -> DIDTalksService:
-        if self._did_service is None:
+        if self._lip_sync_service is None:
             try:
-                self._did_service = DIDTalksService(webhook=self._default_webhook)
+                self._lip_sync_service = DIDTalksService()
             except Exception as e:
-                logger.error("Failed to initialize D-ID service: %s", e)
+                logger.error("Failed to initialize lip sync service: %s", e)
                 raise
-        return self._did_service
+        return self._lip_sync_service
 
 
     async def connect(self, websocket: WebSocket, session_id: str):
@@ -269,15 +268,11 @@ class RealtimeWebSocketManager:
         await session.interrupt()
 
     def _has_text_generation_available(self, persona: str) -> bool:
-        """Check if text-based D-ID generation is available for this persona."""
-        try:
-            from app.services.did_talks import resolve_persona_source_url as _r
-        except Exception:
-            from services.did_talks import resolve_persona_source_url as _r
-        return bool(_r(persona))
+        """Check if text-based generation is available for this persona."""
+        return bool(resolve_persona_source_url(persona))
 
     def _should_use_audio_for_did(self, persona: str) -> bool:
-        """Check if we should use audio for D-ID generation (when no source URL is configured)."""
+        """Check if we should use audio for lip sync generation."""
         return not self._has_text_generation_available(persona)
 
     def _resolve_persona_video(self, persona: str, sentiment: str) -> str:
@@ -1266,7 +1261,6 @@ class RealtimeWebSocketManager:
                 source_url=src,
                 text=text,
                 voice_id=voice_id,
-                webhook=self._default_webhook,
             )
             logger.info(f"[Session {session_id}] D-ID generation completed with status: {result.status}, talk_id: {result.talk_id}")
 

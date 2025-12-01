@@ -1,30 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
+from openai import OpenAI
 
-# Support both package and script import contexts for settings
 try:
-    from ..config import settings  # when imported as part of the app package
-except Exception:  # pragma: no cover - fallback for script-style execution
-    try:
-        from app.config import settings  # when "app" is a top-level package
-    except Exception:  # final fallback when running from server/app as CWD
-        from config import settings
-
-
-API_BASE = "https://api.d-id.com"
+    from ..config import settings
+except Exception:
+    from app.config import settings
 
 
 def _pcm16le_to_wav(pcm: bytes, sample_rate: int = 24_000, channels: int = 1) -> bytes:
-    """Wrap raw PCM 16-bit little-endian mono data into a minimal WAV container.
-
-    D-ID accepts audio uploads; wrapping to WAV ensures content-type/audio container is explicit.
-    """
+    """Wrap raw PCM 16-bit little-endian mono data into a minimal WAV container."""
     import struct
 
     byte_rate = sample_rate * channels * 2
@@ -34,9 +27,7 @@ def _pcm16le_to_wav(pcm: bytes, sample_rate: int = 24_000, channels: int = 1) ->
     riff_chunk_size = 4 + (8 + fmt_chunk_size) + (8 + data_size)
 
     header = b"RIFF" + struct.pack("<I", riff_chunk_size) + b"WAVE"
-    # fmt chunk
     header += b"fmt " + struct.pack("<IHHIIHH", fmt_chunk_size, 1, channels, sample_rate, byte_rate, block_align, 16)
-    # data chunk
     header += b"data" + struct.pack("<I", data_size)
     return header + pcm
 
@@ -50,22 +41,26 @@ class DidTalkResult:
 
 
 class DIDTalksService:
-    def __init__(self, api_key: Optional[str] = None, webhook: Optional[str] = None):
-        raw_key = api_key or settings.did_api_key
-        if not raw_key:
-            raise RuntimeError("DID_API_KEY missing; set in environment")
-        # Support USERNAME:PASSWORD or single token (password may be empty)
-        if ":" in raw_key:
-            user, pwd = raw_key.split(":", 1)
-        else:
-            user, pwd = raw_key, ""
-        self._auth = (user, pwd)
-        self._default_webhook = webhook or settings.did_webhook_url
+    """RunPod-backed implementation that accepts PCM audio + persona image."""
 
-    def _base_headers(self) -> dict[str, str]:
-        # D-ID prefers Basic auth with API key as username and empty password.
-        # We'll pass auth=(api_key, "") to httpx and keep basic JSON defaults here.
-        return {"Accept": "application/json"}
+    def __init__(
+        self,
+        *,
+        base_url: Optional[str] = None,
+        timeout: float = 120.0,
+        webhook: Optional[str] = None,  # retained for API compatibility
+        api_key: Optional[str] = None,  # retained for API compatibility
+    ):
+        raw_base = (base_url or settings.runpod_base_url or "").strip()
+        if not raw_base:
+            raise RuntimeError("RUNPOD_BASE_URL missing; set your RunPod FastAPI server URL")
+        if not raw_base.startswith(("http://", "https://")):
+            raise RuntimeError("RUNPOD_BASE_URL must include http/https scheme")
+        self._base_url = raw_base.rstrip("/")
+        self._timeout = timeout
+        self._tts_client: Optional[OpenAI] = None
+        if settings.openai_api_key:
+            self._tts_client = OpenAI(api_key=settings.openai_api_key)
 
     async def create_talk_multipart(
         self,
@@ -74,55 +69,76 @@ class DIDTalksService:
         image_filename: str,
         audio_wav_bytes: bytes,
         timeout: float = 30.0,
-    ) -> str:
-        """Create a talk by uploading image + audio as multipart. Returns talk id."""
+    ) -> dict[str, object]:
+        image_mime = "image/png"
+        if image_filename.lower().endswith((".jpg", ".jpeg")):
+            image_mime = "image/jpeg"
         files = {
-            "source_image": (image_filename, image_bytes, "image/jpeg" if image_filename.endswith(".jpeg") or image_filename.endswith(".jpg") else "image/png"),
+            "image": (image_filename, image_bytes, image_mime),
             "audio": ("audio.wav", audio_wav_bytes, "audio/wav"),
         }
-        async with httpx.AsyncClient(
-            base_url=API_BASE,
-            headers=self._base_headers(),
-            timeout=timeout,
-            auth=self._auth,
-        ) as client:
-            resp = await client.post("/talks", files=files)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(f"{self._base_url}/generate", files=files)
             resp.raise_for_status()
-            data = resp.json()
-            talk_id = data.get("id") or data.get("talk_id")
-            if not talk_id:
-                raise RuntimeError(f"Unexpected response from D-ID: {data}")
-            return str(talk_id)
+            return resp.json()
 
-    async def get_talk(self, talk_id: str, timeout: float = 30.0) -> DidTalkResult:
-        async with httpx.AsyncClient(
-            base_url=API_BASE,
-            headers=self._base_headers(),
-            timeout=timeout,
-            auth=self._auth,
-        ) as client:
-            resp = await client.get(f"/talks/{talk_id}")
-            resp.raise_for_status()
-            data = resp.json()
-            status = str(data.get("status") or data.get("state") or "unknown")
-            result_url = data.get("result_url") or (data.get("result") or {}).get("url")
-            error = data.get("error") or None
-            return DidTalkResult(talk_id=talk_id, status=status, result_url=result_url, error=error)
+    def _coerce_result(self, data: dict[str, object]) -> DidTalkResult:
+        raw_path = str(data.get("video_path") or data.get("path") or data.get("result") or "")
+        talk_id = str(data.get("talk_id") or data.get("id") or raw_path or uuid.uuid4().hex)
+        status = str(data.get("status") or "succeeded")
+        result_url = self._build_result_url(raw_path) if raw_path else None
+        error_value = data.get("error") if isinstance(data.get("error"), str) else None
+        return DidTalkResult(
+            talk_id=talk_id,
+            status=status,
+            result_url=result_url,
+            error=None if status.lower() in {"succeeded", "done", "complete"} else error_value,
+        )
 
-    async def wait_for_result(self, talk_id: str, *, poll_interval: float = 1.0, max_wait: float = 120.0) -> DidTalkResult:
-        deadline = asyncio.get_event_loop().time() + max_wait
-        last = None
-        while asyncio.get_event_loop().time() < deadline:
-            last = await self.get_talk(talk_id)
-            if last.status.lower() in {"done", "complete", "succeeded"}:
-                return last
-            if last.status.lower() in {"error", "failed"}:
-                return last
-            await asyncio.sleep(poll_interval)
-        # Timed out
-        if last is None:
-            return DidTalkResult(talk_id=talk_id, status="timeout", result_url=None, error="Timeout waiting for result")
-        return DidTalkResult(talk_id=talk_id, status="timeout", result_url=last.result_url, error="Timeout")
+    def _build_result_url(self, raw_path: str) -> str:
+        if raw_path.startswith(("http://", "https://")):
+            return raw_path
+        normalized = raw_path.lstrip("./")
+        return f"{self._base_url}/{normalized.lstrip('/')}"
+
+    async def _load_image_bytes(self, source: str, timeout: float = 30.0) -> tuple[bytes, str]:
+        parsed = urlparse(source)
+        if parsed.scheme in {"http", "https"}:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(source)
+                resp.raise_for_status()
+                filename = Path(parsed.path).name or f"persona_{uuid.uuid4().hex}.png"
+                return resp.content, filename
+
+        path = Path(source)
+        if not path.exists():
+            raise FileNotFoundError(f"Persona image not found: {source}")
+        return path.read_bytes(), path.name
+
+    async def _synthesize_text_to_wav(self, text: str, voice_id: str) -> bytes:
+        if not self._tts_client:
+            raise RuntimeError("OPENAI_API_KEY required for text-based lip sync generation")
+
+        voice = self._map_voice_id(voice_id)
+
+        def _run_tts() -> bytes:
+            response = self._tts_client.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice=voice,
+                input=text,
+                format="wav",
+            )
+            return response.read()
+
+        return await asyncio.to_thread(_run_tts)
+
+    def _map_voice_id(self, voice_id: str) -> str:
+        mapping = {
+            "en-US-AriaNeural": "alloy",
+            "en-US-GuyNeural": "baritone",
+            "en-US-JennyNeural": "verse",
+        }
+        return mapping.get(voice_id, "alloy")
 
     async def generate_talk_from_pcm(
         self,
@@ -133,70 +149,12 @@ class DIDTalksService:
     ) -> DidTalkResult:
         image_bytes = persona_image_path.read_bytes()
         wav = _pcm16le_to_wav(pcm_bytes, sample_rate=sample_rate)
-        talk_id = await self.create_talk_multipart(
+        data = await self.create_talk_multipart(
             image_bytes=image_bytes,
             image_filename=persona_image_path.name,
             audio_wav_bytes=wav,
         )
-        return await self.wait_for_result(talk_id)
-
-    async def create_talk_text(
-        self,
-        *,
-        source_url: str,
-        text: str,
-        voice_id: str = "en-US-JennyNeural",
-        webhook: Optional[str] = None,
-        timeout: float = 30.0,
-    ) -> str:
-        payload: dict[str, object] = {
-            "source_url": source_url,
-            "script": {
-                "type": "text",
-                "input": text,
-                "provider": {
-                    "type": "microsoft",
-                    "voice_id": voice_id
-                }
-            },
-            "config": {
-                "stitch": "true"
-            }
-        }
-        webhook_url = webhook or self._default_webhook
-        if webhook_url:
-            # According to example provided, webhook lives under script
-            assert isinstance(payload["script"], dict)
-            payload["script"]["webhook"] = webhook_url
-        import logging
-        logger = logging.getLogger(__name__)
-
-        logger.info(f"Sending D-ID talk creation request: {payload}")
-
-        async with httpx.AsyncClient(
-            base_url=API_BASE,
-            headers={**self._base_headers(), "Content-Type": "application/json"},
-            timeout=timeout,
-            auth=self._auth,
-        ) as client:
-            resp = await client.post("/talks", json=payload)
-            logger.info(f"D-ID API response status: {resp.status_code}")
-
-            try:
-                resp.raise_for_status()
-                data = resp.json()
-                logger.info(f"D-ID API response data: {data}")
-
-                talk_id = data.get("id") or data.get("talk_id")
-                if not talk_id:
-                    logger.error(f"No talk_id in D-ID response: {data}")
-                    raise RuntimeError(f"Unexpected response from D-ID: {data}")
-
-                logger.info(f"Successfully created D-ID talk with ID: {talk_id}")
-                return str(talk_id)
-            except httpx.HTTPStatusError as e:
-                logger.error(f"D-ID API HTTP error: {e.response.status_code} - {e.response.text}")
-                raise
+        return self._coerce_result(data)
 
     async def generate_talk_from_text(
         self,
@@ -204,67 +162,34 @@ class DIDTalksService:
         source_url: str,
         text: str,
         voice_id: str = "en-US-JennyNeural",
-        webhook: Optional[str] = None,
+        webhook: Optional[str] = None,  # kept for interface compatibility
     ) -> DidTalkResult:
-        import logging
-        logger = logging.getLogger(__name__)
-
-        logger.info(f"Starting D-ID talk generation: source_url={source_url[:50]}..., text_length={len(text)}, voice_id={voice_id}")
-        talk_id = await self.create_talk_text(
-            source_url=source_url,
-            text=text,
-            voice_id=voice_id,
-            webhook=webhook,
+        image_bytes, image_filename = await self._load_image_bytes(source_url)
+        wav_bytes = await self._synthesize_text_to_wav(text, voice_id)
+        data = await self.create_talk_multipart(
+            image_bytes=image_bytes,
+            image_filename=image_filename,
+            audio_wav_bytes=wav_bytes,
         )
-        logger.info(f"D-ID talk created with ID: {talk_id}")
-
-        result = await self.wait_for_result(talk_id)
-        logger.info(f"D-ID talk {talk_id} completed with status: {result.status}")
-        return result
+        return self._coerce_result(data)
 
 
 def resolve_persona_image(persona: str) -> Path:
-    """Map a short persona key to the repository's web/public image path."""
-    # This file: server/app/services/did_talks.py
     here = Path(__file__).resolve()
-    repo_root = here.parents[3]  # .../deckard
+    repo_root = here.parents[3]
     public = repo_root / "web" / "public"
     mapping = {
-        # New keys mapped to existing public assets
         "joi": public / "joi.png",
         "officer_k": public / "officer_k.png",
-        "officer_j": public / "officer_j.png"
+        "officer_j": public / "officer_j.png",
     }
     key = persona.lower().strip()
-    if key not in mapping:
-        # default to joi
-        key = "joi"
-    path = mapping[key]
+    path = mapping.get(key, mapping["joi"])
     if not path.exists():
         raise FileNotFoundError(f"Persona image not found: {path}")
     return path
 
 
 def resolve_persona_source_url(persona: str) -> Optional[str]:
-    import logging
-    import os
-    logger = logging.getLogger(__name__)
-
-    key = persona.lower().strip()
-    env_key = {
-        "joi": "DID_SOURCE_URL_JOI",
-        "officer_k": "DID_SOURCE_URL_OFFICER_K",
-        "officer_j": "DID_SOURCE_URL_OFFICER_J",
-    }.get(key)
-
-    if not env_key:
-        logger.warning(f"Unknown persona for source URL resolution: {persona}")
-        return None
-
-    source_url = os.getenv(env_key)
-    if source_url:
-        logger.info(f"Found source URL for persona {persona} ({env_key}): {source_url[:50]}...")
-    else:
-        logger.warning(f"No source URL configured for persona {persona} (env var {env_key} is empty)")
-
-    return source_url
+    """No remote persona URLs are required; fallback to audio-only path."""
+    return None

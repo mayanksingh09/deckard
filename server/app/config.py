@@ -17,14 +17,10 @@ class Settings:
     """
 
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
-    runpod_base_url: str = os.getenv("RUNPOD_BASE_URL", "https://runpod.example.com")
+    runpod_base_url: str = os.getenv("RUNPOD_BASE_URL", "https://6uzcldy1gvdrdu-8000.proxy.runpod.net")
     supabase_url: Optional[str] = os.getenv("SUPABASE_URL")
     supabase_service_role_key: Optional[str] = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    # D-ID Talks API key
-    did_api_key: Optional[str] = os.getenv("DID_API_KEY")
-    # Optional webhook endpoint invoked by D-ID once a talk is ready
-    did_webhook_url: Optional[str] = os.getenv("DID_WEBHOOK_URL")
 
 
 @lru_cache(maxsize=1)
