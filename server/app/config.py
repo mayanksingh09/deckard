@@ -17,7 +17,7 @@ class Settings:
     """
 
     openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
-    runpod_base_url: str = os.getenv("RUNPOD_BASE_URL", "https://6uzcldy1gvdrdu-8000.proxy.runpod.net")
+    runpod_base_url: str = os.getenv("RUNPOD_BASE_URL")
     supabase_url: Optional[str] = os.getenv("SUPABASE_URL")
     supabase_service_role_key: Optional[str] = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

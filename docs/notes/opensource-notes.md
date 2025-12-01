@@ -24,3 +24,13 @@ Tried using Jupyter Notebook to setup SadTalker but it failed because of matplot
 - Need to add support for concurrent requests on the RunPod server (When several people use Deckard at the same time)
 - Memory management: Right now the server stores all the videos created which is not ideal. 
     - It also creates a lot of temporary files in the SadTalker folder
+
+
+## Bugs and Approaches tried
+- Image has weird proportions, need to fix. Theres a bug where if I return a video with the same proportions as the default videos (like joi-thinking.mp4), then the video for some reason defaults to joi.png. 
+    - Still trying to find out the cause
+- Still very slow been working on improving
+    - Looking into batch count, increasing slightly improves the speed but not by much since a lot of the time spent is in connecting
+    - Will experiment with other models
+    - RTX 5090 is currently unavailable
+

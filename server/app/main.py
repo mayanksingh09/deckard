@@ -66,7 +66,8 @@ try:
 except ImportError:
     from ai_agents.sentiment_classifying import classify_sentiment
 
-logging.basicConfig(level=logging.ERROR)
+log_level = getattr(logging, (settings.log_level or "INFO").upper(), logging.INFO)
+logging.basicConfig(level=log_level)
 logger = logging.getLogger(__name__)
 
 from app.services.did_talks import (

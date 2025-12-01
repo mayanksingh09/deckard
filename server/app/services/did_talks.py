@@ -47,7 +47,7 @@ class DIDTalksService:
         self,
         *,
         base_url: Optional[str] = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
         webhook: Optional[str] = None,  # retained for API compatibility
         api_key: Optional[str] = None,  # retained for API compatibility
     ):
@@ -68,8 +68,11 @@ class DIDTalksService:
         image_bytes: bytes,
         image_filename: str,
         audio_wav_bytes: bytes,
-        timeout: float = 30.0,
+        timeout: Optional[float] = None,
     ) -> dict[str, object]:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Posting lip sync request to RunPod at %s/generate", self._base_url)
         image_mime = "image/png"
         if image_filename.lower().endswith((".jpg", ".jpeg")):
             image_mime = "image/jpeg"
@@ -77,10 +80,13 @@ class DIDTalksService:
             "image": (image_filename, image_bytes, image_mime),
             "audio": ("audio.wav", audio_wav_bytes, "audio/wav"),
         }
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        effective_timeout = timeout or self._timeout
+        async with httpx.AsyncClient(timeout=effective_timeout) as client:
             resp = await client.post(f"{self._base_url}/generate", files=files)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            logger.info("RunPod response payload keys: %s", list(data.keys()))
+            return data
 
     def _coerce_result(self, data: dict[str, object]) -> DidTalkResult:
         raw_path = str(data.get("video_path") or data.get("path") or data.get("result") or "")
@@ -154,7 +160,11 @@ class DIDTalksService:
             image_filename=persona_image_path.name,
             audio_wav_bytes=wav,
         )
-        return self._coerce_result(data)
+        result = self._coerce_result(data)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Lip sync video ready at %s", result.result_url)
+        return result
 
     async def generate_talk_from_text(
         self,
